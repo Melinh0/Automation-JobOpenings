@@ -11,13 +11,19 @@ import os
 from difflib import SequenceMatcher  
 import subprocess   
 import psutil
+from dotenv import load_dotenv
+import os
+
+# Carrega variáveis de ambiente do arquivo .env
+load_dotenv()
 
 # ================= CONFIGURAÇÕES =================
-GUPY_SEARCH_URL = "https://portal.gupy.io/job-search/sortBy=publishedDate"
-KEYWORDS = ["Segurança","Python","dados", "Engenheiro de dados", "IA", "BI", "Automação", "estagiário backend", "cientista", "dados", "JR", "desenvolvedor", "analista", "segurança", "backend"]
-CV_PDF_PATH = r"c:\Users\yagom\Downloads\Currículo_Vagas(Português).pdf"
+GUPY_SEARCH_URL = os.getenv("GUPY_SEARCH_URL", "https://portal.gupy.io/job-search/sortBy=publishedDate")
+KEYWORDS = [kw.strip() for kw in os.getenv("KEYWORDS", "Segurança,Python,dados,Engenheiro de dados,IA,BI,Automação,estagiário backend,cientista,JR,desenvolvedor,analista,backend").split(",")]
+CV_PDF_PATH = os.getenv("CV_PDF_PATH", r"c:\Users\yagom\Downloads\Currículo_Vagas(Português).pdf")
 
-OLLAMA_API_KEY = "3b4d8b5fbd76474091004cb15b0fdae3.wQ1uN4_R_4X6Wr7gTzYETZjQ"
+OLLAMA_API_KEY = os.getenv("OLLAMA_API_KEY")
+OLLAMA_HOST = os.getenv("OLLAMA_HOST", "https://ollama.com")
 OLLAMA_HOST = "https://ollama.com"
 OLLAMA_MODELS = [
     "qwen3-coder-next:latest",
@@ -63,16 +69,16 @@ OLLAMA_MODELS = [
 fallback_count = 0
 MAX_FALLBACK = 5
 
-NOME_COMPLETO = "Yago Melo da Costa"
-NOME_MAE = "Mara Rubya de Souza Melo"
-TELEFONE = "(85) 99104-7582"
-EMAIL = "yagomelo20022109@gmail.com"
-SENHA = "wonk#3479" 
-LINKEDIN = "https://www.linkedin.com/in/yago-melo-da-costa-96b425248/"
-GITHUB = "https://github.com/Melinh0"
-CPF = "06128204244"
-RG = "30819709"
-NOME_PAI = "Wallace Silva da Costa"
+NOME_COMPLETO = os.getenv("NOME_COMPLETO")
+NOME_MAE = os.getenv("NOME_MAE")
+NOME_PAI = os.getenv("NOME_PAI")
+TELEFONE = os.getenv("TELEFONE")
+EMAIL = os.getenv("GUPY_EMAIL")
+SENHA = os.getenv("GUPY_PASSWORD")
+LINKEDIN = os.getenv("LINKEDIN")
+GITHUB = os.getenv("GITHUB")
+CPF = os.getenv("CPF")
+RG = os.getenv("RG")
 
 # ================= FUNÇÃO PARA INICIAR O CHROME COM DEBUG =================
 def encontrar_chrome_exe():
