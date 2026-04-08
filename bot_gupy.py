@@ -184,7 +184,7 @@ def salvar_vagas_processadas(links_set):
         log(f"Erro ao salvar vagas processadas: {e}")
 
 # ================= FUNÇÕES DE CONHECIMENTO (RAG) =================
-ARQUIVO_CONHECIMENTO = "knowledge_base.json"
+ARQUIVO_CONHECIMENTO = "json\knowledge_base.json"
 MAX_VAGAS_NA_BASE = 200  # mantém apenas as últimas 200 vagas
 
 def is_dns_error_page(page):
