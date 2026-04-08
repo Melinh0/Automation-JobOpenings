@@ -163,7 +163,7 @@ def goto_with_retry(page, url, max_retries=3, timeout=60000):
     return False
 
 # ================= FUNÇÕES DE PERSISTÊNCIA (vagas já candidatadas) =================
-ARQUIVO_VAGAS_PROCESSADAS = "vagas_processadas.json"
+ARQUIVO_VAGAS_PROCESSADAS = "json\vagas_processadas.json"
 
 def carregar_vagas_processadas():
     if os.path.exists(ARQUIVO_VAGAS_PROCESSADAS):
