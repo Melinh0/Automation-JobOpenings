@@ -13,59 +13,29 @@ import subprocess
 import psutil
 from dotenv import load_dotenv
 import os
+import sys
 
 # Carrega variáveis de ambiente do arquivo .env
 load_dotenv()
 
+# ================= FUNÇÃO DE LOG =================
+def log(msg):
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
+
 # ================= CONFIGURAÇÕES =================
-GUPY_SEARCH_URL = os.getenv("GUPY_SEARCH_URL", "https://portal.gupy.io/job-search/sortBy=publishedDate")
-KEYWORDS = [kw.strip() for kw in os.getenv("KEYWORDS", "Segurança,Python,dados,Engenheiro de dados,IA,BI,Automação,estagiário backend,cientista,JR,desenvolvedor,analista,backend").split(",")]
-CV_PDF_PATH = os.getenv("CV_PDF_PATH", r"c:\Users\yagom\Downloads\Currículo_Vagas(Português).pdf")
+GUPY_SEARCH_URL = os.getenv("GUPY_SEARCH_URL")
+KEYWORDS = [kw.strip() for kw in os.getenv("KEYWORDS").split(",")]
+CV_PDF_PATH = os.getenv("CV_PDF_PATH")
+
+if sys.platform == "linux" and CV_PDF_PATH.startswith("c:\\"):
+    CV_PDF_PATH = "/mnt/" + CV_PDF_PATH[0].lower() + CV_PDF_PATH[2:].replace("\\", "/")
+    log(f"Caminho do PDF ajustado para WSL: {CV_PDF_PATH}")
 
 OLLAMA_API_KEY = os.getenv("OLLAMA_API_KEY")
-OLLAMA_HOST = os.getenv("OLLAMA_HOST", "https://ollama.com")
-OLLAMA_HOST = "https://ollama.com"
-OLLAMA_MODELS = [
-    "qwen3-coder-next:latest",
-    "qwen3-coder-next:cloud",
-    "qwen3-coder-next:q4_K_M",
-    "qwen3-coder-next:q8_0",
-    "qwen3.5:latest",
-    "qwen3.5:0.8b",
-    "qwen3.5:2b",
-    "qwen3.5:4b",
-    "qwen3.5:9b",
-    "qwen3.5:27b",
-    "qwen3.5:35b",
-    "qwen3.5:122b",
-    "qwen3.5:cloud",
-    "qwen3.5:397b-cloud",
-    "deepseek-v3.2:cloud",
-    "mistral-large-3:675b-cloud",
-    "phi4:14b-cloud",
-    "gemma4:latest",
-    "gemma4:e2b",
-    "gemma4:e4b",
-    "gemma4:26b",
-    "gemma4:31b",
-    "minimax-m2.7:cloud",
-    "qwen3-vl:latest",
-    "qwen3-vl:2b",
-    "qwen3-vl:4b",
-    "qwen3-vl:8b",
-    "qwen3-vl:30b",
-    "qwen3-vl:32b",
-    "qwen3-vl:235b",
-    "qwen3-vl:235b-cloud",
-    "qwen3-vl:235b-instruct-cloud",
-    "nemotron:70b-cloud",
-    "granite3.1-dense:8b-cloud",
-    "aya:35b-cloud",
-    "falcon3:10b-cloud",
-    "exaone:32b-cloud",
-    "llama3.2:3b"
-]
-
+OLLAMA_HOST = os.getenv("OLLAMA_HOST")
+with open("json/ollama_models.json", "r") as f:
+    OLLAMA_MODELS = json.load(f)
+    
 fallback_count = 0
 MAX_FALLBACK = 5
 
@@ -163,7 +133,7 @@ def goto_with_retry(page, url, max_retries=3, timeout=60000):
     return False
 
 # ================= FUNÇÕES DE PERSISTÊNCIA (vagas já candidatadas) =================
-ARQUIVO_VAGAS_PROCESSADAS = "json\vagas_processadas.json"
+ARQUIVO_VAGAS_PROCESSADAS = os.path.join("json", "vagas_processadas.json")
 
 def carregar_vagas_processadas():
     if os.path.exists(ARQUIVO_VAGAS_PROCESSADAS):
@@ -184,7 +154,7 @@ def salvar_vagas_processadas(links_set):
         log(f"Erro ao salvar vagas processadas: {e}")
 
 # ================= FUNÇÕES DE CONHECIMENTO (RAG) =================
-ARQUIVO_CONHECIMENTO = "json\knowledge_base.json"
+ARQUIVO_CONHECIMENTO = os.path.join("json", "knowledge_base.json")
 MAX_VAGAS_NA_BASE = 200  # mantém apenas as últimas 200 vagas
 
 def is_dns_error_page(page):
@@ -1697,6 +1667,8 @@ def verificar_e_relogar_se_necessario(page, return_url=None):
 
 def main():
     try:
+        os.makedirs("json", exist_ok=True)
+
         if not iniciar_chrome_com_debug(9222):
             log("❌ Falha ao iniciar Chrome com debug.")
             return
