@@ -19,31 +19,31 @@ load_dotenv()
 
 # ================= CONFIGURATION =================
 SOLIDES_LOGIN_URL = "https://auth.vagas.solides.com.br/sign-in"
-SOLIDES_JOBS_URL = "https://vagas.solides.com.br/"
-SEARCH_KEYWORD = os.getenv("SOLIDES_KEYWORD", "bemol")  # default from example
-CV_PDF_PATH = os.getenv("CV_PDF_PATH")
+SOLIDES_JOBS_URL = os.getenv("SOLIDES_JOBS_URL", "https://vagas.solides.com.br/")
+SEARCH_KEYWORD = os.getenv("SOLIDES_KEYWORD", "")  # sem valor padrão
+CV_PDF_PATH = os.getenv("CV_PDF_PATH")  # deve ser definido no .env
 OLLAMA_API_KEY = os.getenv("OLLAMA_API_KEY")
 OLLAMA_HOST = os.getenv("OLLAMA_HOST")
 with open("json/ollama_models.json", "r") as f:
     OLLAMA_MODELS = json.load(f)
 
-# Personal data (set in .env or directly)
-NOME_COMPLETO = os.getenv("NOME_COMPLETO", "Yago Melo")
+# Personal data (set in .env only)
+NOME_COMPLETO = os.getenv("NOME_COMPLETO", "")
 NOME_MAE = os.getenv("NOME_MAE", "")
 NOME_PAI = os.getenv("NOME_PAI", "")
 TELEFONE = os.getenv("TELEFONE", "")
-EMAIL = os.getenv("SOLIDES_EMAIL", "yagomelo20022109@gmail.com")
-SENHA = os.getenv("SOLIDES_PASSWORD", "G19+YtfM")
+EMAIL = os.getenv("SOLIDES_EMAIL", "")
+SENHA = os.getenv("SOLIDES_PASSWORD", "")
 LINKEDIN = os.getenv("LINKEDIN", "")
-GITHUB = os.getenv("GITHUB", "https://github.com/Melinh0")
+GITHUB = os.getenv("GITHUB", "")
 CPF = os.getenv("CPF", "")
-RG = os.getenv("RG", "30819709")
-CEP = os.getenv("CEP", "60824-010")
-BAIRRO = os.getenv("BAIRRO", "Parque Iracema")
-RUA = os.getenv("RUA", "Rua Deputado Sebastião Brasilino de Freitas")
-NUMERO = os.getenv("NUMERO", "555")
-CIDADE = os.getenv("CIDADE", "Fortaleza")
-ESTADO = os.getenv("ESTADO", "CE")
+RG = os.getenv("RG", "")
+CEP = os.getenv("CEP", "")
+BAIRRO = os.getenv("BAIRRO", "")
+RUA = os.getenv("RUA", "")
+NUMERO = os.getenv("NUMERO", "")
+CIDADE = os.getenv("CIDADE", "")
+ESTADO = os.getenv("ESTADO", "")
 
 # Persistence
 PROCESSED_JOBS_FILE = os.path.join("json", "solides_processadas.json")
@@ -115,6 +115,9 @@ def log(msg):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
 
 def extrair_texto_pdf(caminho):
+    if not caminho or not os.path.exists(caminho):
+        log("❌ Caminho do PDF não configurado ou arquivo não encontrado.")
+        return ""
     try:
         with pdfplumber.open(caminho) as pdf:
             texto = "\n".join(pagina.extract_text() for pagina in pdf.pages if pagina.extract_text())
@@ -289,7 +292,7 @@ def fazer_login(page):
     if page.locator('button:has-text("Candidatura rápida")').count() > 0:
         log("✅ Já está logado (botão 'Candidatura rápida' visível).")
         return True
-    if "YAGO MELO DA COSTA" in page.content():
+    if NOME_COMPLETO and NOME_COMPLETO.upper() in page.content():
         log("✅ Nome do usuário encontrado. Já logado.")
         return True
     if "Minhas candidaturas" in page.content():
@@ -588,41 +591,41 @@ def extrair_info_curriculo(contexto_cv):
 
 def gerar_resposta_fallback(label, tipo, contexto_cv, contexto_vaga, options=None):
     label_lower = label.lower()
-    # Dados pessoais
+    # Dados pessoais - usa as variáveis carregadas do .env (podem estar vazias)
     if "nome completo" in label_lower:
-        return NOME_COMPLETO
+        return NOME_COMPLETO if NOME_COMPLETO else "NÃO_CONFIGURADO"
     if "nome da sua mãe" in label_lower:
-        return NOME_MAE
+        return NOME_MAE if NOME_MAE else "NÃO_CONFIGURADO"
     if "nome do pai" in label_lower:
-        return NOME_PAI
+        return NOME_PAI if NOME_PAI else "NÃO_CONFIGURADO"
     if "cpf" in label_lower:
-        return CPF
+        return CPF if CPF else "NÃO_CONFIGURADO"
     if "rg" in label_lower:
-        return RG
+        return RG if RG else "NÃO_CONFIGURADO"
     if "telefone" in label_lower:
-        return TELEFONE
+        return TELEFONE if TELEFONE else "NÃO_CONFIGURADO"
     if "e-mail" in label_lower:
-        return EMAIL
+        return EMAIL if EMAIL else "NÃO_CONFIGURADO"
     if "linkedin" in label_lower:
-        return LINKEDIN
+        return LINKEDIN if LINKEDIN else "NÃO_CONFIGURADO"
     if "github" in label_lower:
-        return GITHUB
+        return GITHUB if GITHUB else "NÃO_CONFIGURADO"
     if "pretensão salarial" in label_lower:
         return "R$ 1.500,00"
     if "estado civil" in label_lower:
         return "Solteiro(a)"
     if "cep" in label_lower:
-        return CEP
+        return CEP if CEP else "NÃO_CONFIGURADO"
     if "bairro" in label_lower:
-        return BAIRRO
+        return BAIRRO if BAIRRO else "NÃO_CONFIGURADO"
     if "rua" in label_lower:
-        return RUA
+        return RUA if RUA else "NÃO_CONFIGURADO"
     if "número" in label_lower or "num" in label_lower:
-        return NUMERO
+        return NUMERO if NUMERO else "NÃO_CONFIGURADO"
     if "cidade" in label_lower:
-        return CIDADE
+        return CIDADE if CIDADE else "NÃO_CONFIGURADO"
     if "estado" in label_lower and "civil" not in label_lower:
-        return ESTADO
+        return ESTADO if ESTADO else "NÃO_CONFIGURADO"
     if "cnh" in label_lower:
         return "Sim" if "categoria" not in label_lower else "B"
     if "possui graduação" in label_lower or "graduação em" in label_lower:
@@ -632,7 +635,7 @@ def gerar_resposta_fallback(label, tipo, contexto_cv, contexto_vaga, options=Non
     if "vídeo apresentação" in label_lower:
         return ""  # opcional
     if "link portfólio" in label_lower:
-        return GITHUB
+        return GITHUB if GITHUB else "NÃO_CONFIGURADO"
     if "indicado" in label_lower:
         return "Não"
     # Para selects/radios com opções
@@ -753,8 +756,8 @@ DESCRIÇÃO DA VAGA:
 {contexto_vaga[:2000]}
 
 DADOS PESSOAIS:
-Nome: {NOME_COMPLETO}, CPF: {CPF}, RG: {RG}, Email: {EMAIL}, Telefone: {TELEFONE}
-CEP: {CEP}, Bairro: {BAIRRO}, Rua: {RUA}, Número: {NUMERO}, Cidade: {CIDADE}, Estado: {ESTADO}
+Nome: {NOME_COMPLETO if NOME_COMPLETO else 'NÃO_CONFIGURADO'}, CPF: {CPF if CPF else 'NÃO_CONFIGURADO'}, RG: {RG if RG else 'NÃO_CONFIGURADO'}, Email: {EMAIL if EMAIL else 'NÃO_CONFIGURADO'}, Telefone: {TELEFONE if TELEFONE else 'NÃO_CONFIGURADO'}
+CEP: {CEP if CEP else 'NÃO_CONFIGURADO'}, Bairro: {BAIRRO if BAIRRO else 'NÃO_CONFIGURADO'}, Rua: {RUA if RUA else 'NÃO_CONFIGURADO'}, Número: {NUMERO if NUMERO else 'NÃO_CONFIGURADO'}, Cidade: {CIDADE if CIDADE else 'NÃO_CONFIGURADO'}, Estado: {ESTADO if ESTADO else 'NÃO_CONFIGURADO'}
 
 {texto_exemplos}
 
@@ -825,7 +828,7 @@ def aplicar_vaga(page, contexto_cv, vagas_processadas_set, link_vaga, titulo_vag
 
     if is_login_page(page):
         log("🔐 Página de login detectada na vaga. Relogando...")
-        fazer_login(page, return_url=link_vaga)
+        fazer_login(page)
         page.wait_for_load_state("networkidle", timeout=15000)
         time.sleep(2)
         return aplicar_vaga(page, contexto_cv, vagas_processadas_set, link_vaga, titulo_vaga)
@@ -886,7 +889,7 @@ def aplicar_vaga(page, contexto_cv, vagas_processadas_set, link_vaga, titulo_vag
 
         if is_login_page(page):
             log("🔐 Redirecionado para login. Relogando...")
-            fazer_login(page, return_url=link_vaga)
+            fazer_login(page)
             page.wait_for_load_state("networkidle", timeout=15000)
             time.sleep(2)
             return aplicar_vaga(page, contexto_cv, vagas_processadas_set, link_vaga, titulo_vaga)
@@ -943,7 +946,7 @@ def aplicar_vaga(page, contexto_cv, vagas_processadas_set, link_vaga, titulo_vag
 
             if page.locator('.border-error-500, div[role="alert"]:has-text("obrigatório")').count() > 0:
                 log("Detectados campos obrigatórios não preenchidos. Preenchendo...")
-                perguntas = preencher_formulario_dinamico(page, contexto_cv, contexto_vaga, link_vaga)  # ← corrigido (apenas uma variável)
+                perguntas = preencher_formulario_dinamico(page, contexto_cv, contexto_vaga, link_vaga)
                 if perguntas:
                     salvar_conhecimento_vaga(link_vaga, titulo_vaga, contexto_vaga, perguntas)
                 salvar_revisar = page.locator('button:has-text("Salvar e revisar")')
@@ -986,7 +989,7 @@ def aplicar_vaga(page, contexto_cv, vagas_processadas_set, link_vaga, titulo_vag
             page.wait_for_selector('input, textarea, select', timeout=10000)
             log("📝 Clicou em 'Responder agora'.")
             time.sleep(2)
-            perguntas = preencher_formulario_dinamico(page, contexto_cv, contexto_vaga, link_vaga)  # ← corrigido
+            perguntas = preencher_formulario_dinamico(page, contexto_cv, contexto_vaga, link_vaga)
             if perguntas:
                 salvar_conhecimento_vaga(link_vaga, titulo_vaga, contexto_vaga, perguntas)
             continue
