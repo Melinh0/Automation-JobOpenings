@@ -7,22 +7,38 @@ import requests
 import subprocess
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import urlparse
-from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
+from dotenv import load_dotenv
+from playwright.sync_api import sync_playwright
 from PIL import Image
 from io import BytesIO
 
-# ================= CONFIGURAÇÕES =================
-LINKS_TXT = Path(r"C:\Users\yagom\Documents\GitHub\Automation-JobOpenings\txt\shein_links.txt")
-IMAGENS_DIR = Path(r"C:\Users\yagom\Documents\GitHub\garimpointeligente\public\images\shein_imagens")
-JSON_PATH = Path(r"C:\Users\yagom\Documents\GitHub\garimpointeligente\src\data\shein_produtos.json")
+# Importa a função de categorização por IA
+from llm_category import obter_categoria_llm
 
-# Perfil separado para Shein (evita conflito com o bot da Shopee)
-CHROME_PROFILE_DIR = Path(r"C:\Users\yagom\Documents\GitHub\Automation-JobOpenings\bots_marketplace\chrome_profile_shein")
-CHROME_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+# Carrega variáveis do arquivo .env
+load_dotenv()
 
+def expand_path(path_str: str) -> Path:
+    """Expande variáveis de ambiente (ex: %VAR%) e retorna um Path."""
+    expanded = os.path.expandvars(path_str)
+    return Path(expanded)
+
+# ================= CONFIGURAÇÕES (lidas do .env) =================
+LINKS_TXT = expand_path(os.getenv("TXT_SHEIN", ""))
+IMAGENS_DIR = expand_path(os.getenv("IMAGES_SHEIN", ""))
+JSON_PATH = expand_path(os.getenv("JSON_SHEIN", ""))
+CHROME_PROFILE_DIR = expand_path(os.getenv("PROFILE_SHEIN", ""))
+
+# Cria os diretórios se não existirem
 IMAGENS_DIR.mkdir(parents=True, exist_ok=True)
 JSON_PATH.parent.mkdir(parents=True, exist_ok=True)
+CHROME_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+
+# Validação básica
+if not LINKS_TXT.exists():
+    raise FileNotFoundError(f"Arquivo de links não encontrado: {LINKS_TXT}")
+if not JSON_PATH.parent.exists():
+    raise FileNotFoundError(f"Diretório do JSON não encontrado: {JSON_PATH.parent}")
 
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -47,13 +63,11 @@ def log(msg):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
 
 def sanitize_filename(name: str) -> str:
-    """Remove caracteres inválidos para nome de arquivo."""
     name = re.sub(r'[\\/*?:"<>|]', "", name)
     name = name.strip().replace(" ", "_")
     return name[:200]
 
 def extrair_id_produto(link: str) -> str:
-    """Extrai um ID do produto da URL (ex: último segmento numérico)."""
     match = re.search(r'-p-(\d+)', link)
     if match:
         return match.group(1)
@@ -73,12 +87,10 @@ def extrair_precos(page) -> tuple:
     preco_atual = None
     preco_original = None
 
-    # Preço atual - #productMainPriceId
     try:
         price_container = page.locator('#productMainPriceId').first
         if price_container.count():
             text = price_container.inner_text().strip()
-            # Exemplo: "R$59,90" ou "R$59,90"
             match = re.search(r'R\$\s*(\d+)[.,](\d{2})', text)
             if match:
                 inteiro = match.group(1)
@@ -92,7 +104,6 @@ def extrair_precos(page) -> tuple:
     except Exception as e:
         log(f"Erro ao extrair preço atual: {e}")
 
-    # Preço original - .productDiscountInfo__retail
     try:
         retail = page.locator('.productDiscountInfo__retail').first
         if retail.count():
@@ -201,12 +212,6 @@ def salvar_json(produtos_por_link):
         json.dump(list(produtos_por_link.values()), f, indent=2, ensure_ascii=False)
 
 def aguardar_captcha(page):
-    """
-    Verifica se há captcha (ex: iframe do reCAPTCHA ou elemento de desafio).
-    Se existir, aguarda indefinidamente até que o captcha seja resolvido
-    (o usuário resolve manualmente). Retorna quando a página do produto estiver pronta.
-    """
-    # Seletores comuns de captcha na Shein (ajuste se necessário)
     captcha_selectors = [
         "iframe[src*='recaptcha']",
         "iframe[src*='captcha']",
@@ -222,27 +227,24 @@ def aguardar_captcha(page):
             break
 
     if not captcha_detected:
-        # Também pode detectar pela ausência do título do produto após alguns segundos
         try:
             page.wait_for_selector('.product-intro__head-name h1, h1.fsp-element', timeout=5000)
-            return  # Já carregou, sem captcha aparente
+            return
         except:
             captcha_detected = True
 
     if captcha_detected:
         log("⚠️ Captcha detectado! Por favor, resolva-o manualmente no navegador.")
         log("Aguardando resolução do captcha...")
-        # Aguarda até que o título do produto apareça (indicando que o captcha foi resolvido)
         try:
             page.wait_for_selector('.product-intro__head-name h1, h1.fsp-element', timeout=0)
             log("✅ Captcha resolvido. Continuando extração...")
-        except Exception as e:
-            # timeout=0 significa esperar indefinidamente
+        except Exception:
             page.wait_for_selector('.product-intro__head-name h1, h1.fsp-element', timeout=0)
             log("✅ Captcha resolvido. Continuando extração...")
         random_delay(2, 4)
 
-def processar_produto(page, link: str):
+def processar_produto(page, link: str, produtos_por_link):
     max_tentativas = 2
     for tentativa in range(1, max_tentativas + 1):
         log(f"Acessando: {link} (tentativa {tentativa}/{max_tentativas})")
@@ -250,7 +252,6 @@ def processar_produto(page, link: str):
             page.goto(link, timeout=60000, wait_until="domcontentloaded")
             random_delay(2, 4)
 
-            # Aceitar cookies
             try:
                 cookie_btn = page.locator('.cmp_c_1100 .cmp_c_2')
                 if cookie_btn.count() and cookie_btn.is_visible():
@@ -260,7 +261,6 @@ def processar_produto(page, link: str):
             except:
                 pass
 
-            # Fechar modal de cupons
             try:
                 close_btn = page.locator('.dialog-header-v2__close-btn span')
                 if close_btn.count() and close_btn.is_visible():
@@ -270,10 +270,8 @@ def processar_produto(page, link: str):
             except:
                 pass
 
-            # Aguardar captcha (se aparecer)
             aguardar_captcha(page)
 
-            # Aguardar título do produto
             try:
                 page.wait_for_selector('.product-intro__head-name h1, h1.fsp-element', timeout=20000)
                 break
@@ -303,8 +301,18 @@ def processar_produto(page, link: str):
         return None
 
     descricao = extrair_descricao(page) or nome
-    categoria = extrair_categoria_shein(page)
+    categoria_original = extrair_categoria_shein(page)
     imagem_filename = extrair_imagem_alta_resolucao(page, nome)
+
+    categorias_existentes = [prod.get('categoria', '') for prod in produtos_por_link.values() if prod.get('categoria')]
+    categoria_sugerida = obter_categoria_llm(nome, descricao, categorias_existentes)
+    if categoria_sugerida:
+        log(f"🤖 IA sugeriu categoria: '{categoria_sugerida}' (original: '{categoria_original}')")
+        categoria = categoria_sugerida
+    else:
+        categoria = categoria_original if categoria_original else "Geral"
+        if not categoria_sugerida:
+            log(f"ℹ️ Usando categoria original: '{categoria}'")
 
     produto = {
         "id": extrair_id_produto(link),
@@ -314,16 +322,14 @@ def processar_produto(page, link: str):
         "descricao": descricao,
         "imagem": imagem_filename,
         "link": link,
-        "categoria": categoria if categoria else "Geral"
+        "categoria": categoria
     }
 
-    # 👇 CORREÇÃO: formatação condicional fora do formatador
     preco_original_str = f"R$ {preco_original:.2f}" if preco_original else "N/A"
     log(f"✔ Extraído: {nome} - R$ {preco_atual:.2f} | Original: {preco_original_str} | Categoria: {categoria}")
     return produto
 
 def main():
-    # Mata processos do Chrome antes de começar (evita conflito de perfil)
     kill_chrome_processes()
 
     if not LINKS_TXT.exists():
@@ -341,7 +347,6 @@ def main():
     produtos_por_link = carregar_json_existente()
 
     with sync_playwright() as p:
-        # Usa um perfil persistente separado para Shein
         context = p.chromium.launch_persistent_context(
             user_data_dir=str(CHROME_PROFILE_DIR),
             headless=False,
@@ -362,7 +367,6 @@ def main():
                 '--disable-dev-shm-usage'
             ]
         )
-        # Script anti-detecção
         context.add_init_script("""
             Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
             window.chrome = { runtime: {} };
@@ -375,7 +379,7 @@ def main():
         for idx, link in enumerate(links, 1):
             log(f"\n[{idx}/{len(links)}] Processando...")
             try:
-                produto = processar_produto(page, link)
+                produto = processar_produto(page, link, produtos_por_link)
                 if produto:
                     produtos_por_link[link] = produto
                     salvar_json(produtos_por_link)

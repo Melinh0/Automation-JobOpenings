@@ -6,6 +6,7 @@ import random
 import requests
 from pathlib import Path
 from urllib.parse import urlparse
+from dotenv import load_dotenv
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
@@ -14,16 +15,33 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
 
-# ================= CONFIGURAÇÕES =================
-JSON_PATH = Path(r"C:\Users\yagom\Documents\GitHub\garimpointeligente\src\data\produtos_shopee.json")
-IMAGES_DIR = Path(r"C:\Users\yagom\Documents\GitHub\garimpointeligente\public\images\shopee_imagens")
+# Importa a função de categorização por IA
+from llm_category import obter_categoria_llm
+
+# Carrega variáveis do arquivo .env
+load_dotenv()
+
+def expand_path(path_str: str) -> Path:
+    """Expande variáveis de ambiente (ex: %VAR%) e retorna um Path."""
+    expanded = os.path.expandvars(path_str)
+    return Path(expanded)
+
+# ================= CONFIGURAÇÕES (lidas do .env) =================
+JSON_PATH = expand_path(os.getenv("JSON_SHOPEE", ""))
+IMAGES_DIR = expand_path(os.getenv("IMAGES_SHOPEE", ""))
+LINKS_FILE = expand_path(os.getenv("TXT_SHOPEE", ""))
+BOT_PROFILE_DIR = expand_path(os.getenv("PROFILE_SHOPEE", ""))
+
+# Cria os diretórios se não existirem
 IMAGES_DIR.mkdir(parents=True, exist_ok=True)
-
-LINKS_FILE = Path(r"C:\Users\yagom\Documents\GitHub\Automation-JobOpenings\txt\shopee_link.txt")
-
-# Perfil dedicado para o bot (dentro da pasta do projeto)
-BOT_PROFILE_DIR = Path(r"C:\Users\yagom\Documents\GitHub\Automation-JobOpenings\bots_marketplace\chrome_profile_bot")
+JSON_PATH.parent.mkdir(parents=True, exist_ok=True)
 BOT_PROFILE_DIR.mkdir(exist_ok=True)
+
+# Validação básica
+if not LINKS_FILE.exists():
+    raise FileNotFoundError(f"Arquivo de links não encontrado: {LINKS_FILE}")
+if not JSON_PATH.parent.exists():
+    raise FileNotFoundError(f"Diretório do JSON não encontrado: {JSON_PATH.parent}")
 
 # ================= FUNÇÕES AUXILIARES =================
 def sanitize_filename(name: str) -> str:
@@ -259,7 +277,17 @@ def process_product(driver, link, existing_products):
 
     img_url = extract_image_url(driver)
     imagem_filename = download_image(img_url, nome) if img_url else ""
-    categoria = extrair_categoria_shopee(driver)
+    categoria_original = extrair_categoria_shopee(driver)
+    descricao = nome  
+    categorias_existentes = [prod.get('categoria', '') for prod in existing_products if prod.get('categoria')]
+    categoria_sugerida = obter_categoria_llm(nome, descricao, categorias_existentes)
+    if categoria_sugerida:
+        print(f"🤖 IA sugeriu categoria: '{categoria_sugerida}' (original: '{categoria_original}')")
+        categoria = categoria_sugerida
+    else:
+        categoria = categoria_original if categoria_original else "Geral"
+        if not categoria_sugerida:
+            print(f"ℹ️ Usando categoria original: '{categoria}'")
 
     existing = next((p for p in existing_products if p.get('link') == link), None)
     if existing:
@@ -333,7 +361,7 @@ if __name__ == "__main__":
         print("Nenhum link encontrado.")
     else:
         print(f"Total de links: {len(lista_links)}")
-        print("\nO bot usará um perfil dedicado do Chrome (pasta 'chrome_profile_bot').")
+        print(f"\nO bot usará um perfil dedicado do Chrome: {BOT_PROFILE_DIR}")
         print("Na primeira execução, pode pedir login na Shopee. Faça login uma vez e o perfil salvará a sessão.")
         print("As imagens serão salvas em alta resolução.\n")
         input("Pressione ENTER para iniciar...")

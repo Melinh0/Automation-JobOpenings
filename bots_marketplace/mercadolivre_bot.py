@@ -6,18 +6,34 @@ import random
 import requests
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import urlparse
+from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright
 from PIL import Image
 from io import BytesIO
+from llm_category import obter_categoria_llm
 
-# ================= CONFIGURAÇÕES =================
-LINKS_TXT = Path(r"C:\Users\yagom\Documents\GitHub\Automation-JobOpenings\txt\links_mercado_livre.txt")
-IMAGENS_DIR = Path(r"C:\Users\yagom\Documents\GitHub\garimpointeligente\public\images\mercado_livre_imagens")
-JSON_PATH = Path(r"C:\Users\yagom\Documents\GitHub\garimpointeligente\src\data\produtos_mercado_livre.json")
+# Carrega variáveis do arquivo .env
+load_dotenv()
 
+def expand_path(path_str: str) -> Path:
+    """Expande variáveis de ambiente (ex: %VAR%) e retorna um Path."""
+    expanded = os.path.expandvars(path_str)
+    return Path(expanded)
+
+# ================= CONFIGURAÇÕES (lidas do .env) =================
+LINKS_TXT = expand_path(os.getenv("TXT_MERCADO_LIVRE", ""))
+IMAGENS_DIR = expand_path(os.getenv("IMAGES_MERCADO_LIVRE", ""))
+JSON_PATH = expand_path(os.getenv("JSON_MERCADO_LIVRE", ""))
+
+# Cria os diretórios se não existirem
 IMAGENS_DIR.mkdir(parents=True, exist_ok=True)
 JSON_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+# Validação básica
+if not LINKS_TXT.exists():
+    raise FileNotFoundError(f"Arquivo de links não encontrado: {LINKS_TXT}")
+if not JSON_PATH.parent.exists():
+    raise FileNotFoundError(f"Diretório do JSON não encontrado: {JSON_PATH.parent}")
 
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -120,12 +136,10 @@ def extrair_categoria_ml(page) -> str:
         items = page.locator('.andes-breadcrumb__item')
         if items.count() == 0:
             return ""
-        # Último item é o produto, penúltimo é a categoria mais específica
         if items.count() >= 2:
             categoria = items.nth(items.count() - 2).inner_text().strip()
         else:
             categoria = items.last.inner_text().strip()
-        # Normalização
         if "Bebê" in categoria or "Infantil" in categoria:
             return "Infantil"
         if "Pet" in categoria or "Animal" in categoria:
@@ -299,7 +313,17 @@ def processar_produto(page, link: str):
 
     descricao = extrair_descricao(page) or nome
     imagem_filename = extrair_imagem_alta_resolucao(page, nome)
-    categoria = extrair_categoria_ml(page)
+    categoria_original = extrair_categoria_ml(page)
+
+    produtos_existentes = list(carregar_json_existente().values())
+    categorias_existentes = [p.get('categoria', '') for p in produtos_existentes if p.get('categoria')]
+    if categoria_original and categoria_original not in categorias_existentes:
+        categorias_existentes.append(categoria_original)
+
+    categoria_llm = obter_categoria_llm(nome, descricao, categorias_existentes)
+    categoria_final = categoria_llm if categoria_llm else categoria_original
+    if categoria_llm:
+        log(f"🤖 IA sugeriu categoria: '{categoria_llm}' (original: '{categoria_original}')")
 
     produto = {
         "id": extrair_id_produto(link),
@@ -308,12 +332,12 @@ def processar_produto(page, link: str):
         "descricao": descricao,
         "imagem": imagem_filename,
         "link": link,
-        "categoria": categoria
+        "categoria": categoria_final
     }
     if preco_anterior is not None:
         produto["preco_anterior"] = round(preco_anterior, 2)
 
-    log(f"✔ Extraído: {nome} - R$ {preco_atual:.2f} | Categoria: {categoria}")
+    log(f"✔ Extraído: {nome} - R$ {preco_atual:.2f} | Categoria: {categoria_final}")
     return produto
 
 def main():

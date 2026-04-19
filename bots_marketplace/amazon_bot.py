@@ -6,18 +6,36 @@ import random
 import requests
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import urlparse
+from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright
 from PIL import Image
 from io import BytesIO
 
-# ================= CONFIGURAÇÕES =================
-LINKS_TXT = Path(r"C:\Users\yagom\Documents\GitHub\Automation-JobOpenings\txt\amazon_links.txt")
-IMAGENS_DIR = Path(r"C:\Users\yagom\Documents\GitHub\garimpointeligente\public\images\amazon_imagens")
-JSON_PATH = Path(r"C:\Users\yagom\Documents\GitHub\garimpointeligente\src\data\produtos_amazon.json")
+# Importa a função de categorização via LLM
+from llm_category import obter_categoria_llm
 
+# Carrega variáveis do arquivo .env
+load_dotenv()
+
+def expand_path(path_str: str) -> Path:
+    """Expande variáveis de ambiente (ex: %VAR%) e retorna um Path."""
+    expanded = os.path.expandvars(path_str)
+    return Path(expanded)
+
+# ================= CONFIGURAÇÕES (lidas do .env) =================
+LINKS_TXT = expand_path(os.getenv("TXT_AMAZON", ""))
+IMAGENS_DIR = expand_path(os.getenv("IMAGES_AMAZON", ""))
+JSON_PATH = expand_path(os.getenv("JSON_AMAZON", ""))
+
+# Cria os diretórios se não existirem
 IMAGENS_DIR.mkdir(parents=True, exist_ok=True)
 JSON_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+# Validação básica
+if not LINKS_TXT.exists():
+    raise FileNotFoundError(f"Arquivo de links não encontrado: {LINKS_TXT}")
+if not JSON_PATH.parent.exists():
+    raise FileNotFoundError(f"Diretório do JSON não encontrado: {JSON_PATH.parent}")
 
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -71,7 +89,6 @@ def extrair_precos(page) -> tuple:
     preco_atual = None
     preco_anterior = None
 
-    # Preço atual via whole+fraction (prioridade)
     try:
         container = page.locator('#corePriceDisplay_desktop_feature_div').first
         if container.count():
@@ -106,7 +123,6 @@ def extrair_precos(page) -> tuple:
         except:
             pass
 
-    # Preço anterior
     try:
         old_offscreen = page.locator('.basisPrice .a-text-price .a-offscreen').first
         if old_offscreen.count():
@@ -132,13 +148,11 @@ def extrair_precos(page) -> tuple:
     return preco_atual, preco_anterior
 
 def extrair_categoria_amazon(page) -> str:
-    """Extrai a categoria mais específica do breadcrumb da Amazon."""
     try:
         links = page.locator('#wayfinding-breadcrumbs_feature_div ul li a')
         if links.count() == 0:
             return ""
         categoria = links.last.inner_text().strip()
-        # Mapeia para nosso padrão
         if "Notebook" in categoria or "Computador" in categoria:
             return "Informática"
         if "Suporte" in categoria or "Acessórios" in categoria:
@@ -281,7 +295,20 @@ def processar_produto(page, link: str):
 
     descricao = extrair_descricao(page) or nome
     imagem_filename = extrair_imagem_alta_resolucao(page, nome)
-    categoria = extrair_categoria_amazon(page)
+    categoria_original = extrair_categoria_amazon(page)
+
+    produtos_existentes = list(carregar_json_existente().values())
+    categorias_existentes = [p.get('categoria', '') for p in produtos_existentes if p.get('categoria')]
+    if categoria_original:
+        categorias_existentes.append(categoria_original)
+
+    categoria_llm = obter_categoria_llm(nome, descricao, categorias_existentes)
+    categoria_final = categoria_llm if categoria_llm else categoria_original
+
+    if categoria_llm:
+        log(f"🧠 LLM sugeriu categoria: {categoria_llm}")
+    else:
+        log(f"ℹ️ Usando categoria original: {categoria_original}")
 
     produto = {
         "id": extrair_id_produto(link),
@@ -290,12 +317,12 @@ def processar_produto(page, link: str):
         "descricao": descricao,
         "imagem": imagem_filename,
         "link": link,
-        "categoria": categoria
+        "categoria": categoria_final
     }
     if preco_anterior is not None and preco_anterior > 0:
         produto["preco_anterior"] = round(preco_anterior, 2)
 
-    log(f"✔ Extraído: {nome} - R$ {preco_atual:.2f} | Categoria: {categoria}")
+    log(f"✔ Extraído: {nome} - R$ {preco_atual:.2f} | Categoria: {categoria_final}")
     return produto
 
 def main():
