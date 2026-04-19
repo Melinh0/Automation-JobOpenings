@@ -179,3 +179,8 @@ cython_debug/
 #  refer to https://docs.cursor.com/context/ignore-files
 .cursorignore
 .cursorindexingignore
+
+bots_marketplace/chrome_profile_bot/
+bots_marketplace/chrome_profile_shein/
+
+**/chrome_profile_*/
