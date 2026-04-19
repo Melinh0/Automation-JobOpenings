@@ -12,9 +12,9 @@ from PIL import Image
 from io import BytesIO
 
 # ================= CONFIGURAÇÕES =================
-LINKS_TXT = Path(r"C:\Users\yagom\Documents\GitHub\Automation-JobOpenings\txt\links_mercado_livre.txt")
-IMAGENS_DIR = Path(r"C:\Users\yagom\Documents\GitHub\garimpointeligente\public\images\mercado_livre_imagens")
-JSON_PATH = Path(r"C:\Users\yagom\Documents\GitHub\garimpointeligente\src\data\produtos_mercado_livre.json")
+LINKS_TXT = Path(r"C:\Users\yagom\Documents\GitHub\Automation-JobOpenings\txt\amazon_links.txt")
+IMAGENS_DIR = Path(r"C:\Users\yagom\Documents\GitHub\garimpointeligente\public\images\amazon_imagens")
+JSON_PATH = Path(r"C:\Users\yagom\Documents\GitHub\garimpointeligente\src\data\produtos_amazon.json")
 
 IMAGENS_DIR.mkdir(parents=True, exist_ok=True)
 JSON_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -37,104 +37,126 @@ def sanitize_filename(name: str) -> str:
     name = name.strip().replace(" ", "_")
     return name[:200]
 
-def extrair_id_produto(url: str) -> str:
-    match = re.search(r'/p/(MLB\d+)', url)
+def extrair_id_produto(link: str) -> str:
+    match = re.search(r'/(?:dp|product)/([A-Z0-9]{10})', link)
     if match:
         return match.group(1)
-    match = re.search(r'MLB-?(\d+)', url)
-    if match:
-        return f"MLB{match.group(1)}"
-    return url.rstrip('/').split('/')[-1]
+    return link.rstrip('/').split('/')[-1]
 
-def extrair_preco(page) -> tuple:
+def extrair_nome(page) -> str:
+    try:
+        title = page.locator('#productTitle').first
+        if title.count():
+            return title.inner_text().strip()
+        title = page.locator('h1.a-size-large').first
+        if title.count():
+            return title.inner_text().strip()
+    except Exception as e:
+        log(f"Erro ao extrair nome: {e}")
+    return ""
+
+def limpar_preco(texto: str) -> float:
+    texto = re.sub(r'R\$', '', texto).strip()
+    texto = re.sub(r'[^\d,\.]', '', texto)
+    texto = texto.replace(',', '.')
+    if texto.count('.') > 1:
+        partes = texto.split('.')
+        texto = ''.join(partes[:-1]) + '.' + partes[-1]
+    try:
+        return float(texto)
+    except:
+        return 0.0
+
+def extrair_precos(page) -> tuple:
     preco_atual = None
     preco_anterior = None
 
+    # Preço atual via whole+fraction (prioridade)
     try:
-        page.wait_for_selector('div#price', timeout=15000)
-    except:
-        log("Aviso: Container #price não encontrado após 15s")
+        container = page.locator('#corePriceDisplay_desktop_feature_div').first
+        if container.count():
+            whole = container.locator('.a-price-whole').first
+            fraction = container.locator('.a-price-fraction').first
+            if whole.count() and fraction.count():
+                w = whole.inner_text().strip()
+                f = fraction.inner_text().strip()
+                preco_atual = limpar_preco(f"{w}.{f}")
+                log(f"DEBUG: Preço atual via whole+fraction = {preco_atual}")
+    except Exception as e:
+        log(f"DEBUG: Erro no whole+fraction: {e}")
 
-    price_container = page.locator('div#price').first
-    if not price_container.count():
-        price_container = page.locator('.ui-pdp-price').first
-
-    if price_container.count():
+    if preco_atual is None or preco_atual == 0:
         try:
-            current_elem = price_container.locator('.ui-pdp-price__second-line .andes-money-amount--cents-superscript').first
-            if current_elem.is_visible():
-                inteiro = current_elem.locator('.andes-money-amount__fraction').inner_text().strip()
-                cents_elem = current_elem.locator('.andes-money-amount__cents')
-                cents = cents_elem.inner_text().strip() if cents_elem.count() else "0"
-                preco_atual = float(f"{inteiro}.{cents}")
-                log(f"DEBUG: Preço atual = {preco_atual}")
-            else:
-                log("DEBUG: Elemento de preço atual não visível")
-        except Exception as e:
-            log(f"DEBUG: Erro ao extrair preço atual: {e}")
-
-        try:
-            old_elem = price_container.locator('.andes-money-amount--previous').first
-            if old_elem.is_visible():
-                inteiro_ant = old_elem.locator('.andes-money-amount__fraction').inner_text().strip()
-                cents_ant_elem = old_elem.locator('.andes-money-amount__cents')
-                cents_ant = cents_ant_elem.inner_text().strip() if cents_ant_elem.count() else "0"
-                preco_anterior = float(f"{inteiro_ant}.{cents_ant}")
-                log(f"DEBUG: Preço anterior = {preco_anterior}")
-            else:
-                log("DEBUG: Preço anterior não encontrado (produto sem desconto)")
-        except Exception as e:
-            log(f"DEBUG: Erro ao extrair preço anterior: {e}")
-    else:
-        log("DEBUG: Container de preço não encontrado")
-
-    if preco_atual is None:
-        try:
-            elem = page.locator('.andes-money-amount--cents-superscript:not(.andes-money-amount--previous)').first
-            if elem.is_visible():
-                inteiro = elem.locator('.andes-money-amount__fraction').inner_text().strip()
-                cents_elem = elem.locator('.andes-money-amount__cents')
-                cents = cents_elem.inner_text().strip() if cents_elem.count() else "0"
-                preco_atual = float(f"{inteiro}.{cents}")
-                log(f"DEBUG: Preço atual (fallback) = {preco_atual}")
+            price_apex = page.locator('.apex-pricetopay-value').first
+            if price_apex.count():
+                text = price_apex.inner_text().strip()
+                preco_atual = limpar_preco(text)
+                log(f"DEBUG: Preço atual via .apex-pricetopay-value = {preco_atual}")
         except:
             pass
 
+    if preco_atual is None or preco_atual == 0:
+        try:
+            offscreen = page.locator('.a-price .a-offscreen').first
+            if offscreen.count():
+                text = offscreen.inner_text().strip()
+                if text and text != " ":
+                    preco_atual = limpar_preco(text)
+                    log(f"DEBUG: Preço atual via .a-offscreen = {preco_atual}")
+        except:
+            pass
+
+    # Preço anterior
+    try:
+        old_offscreen = page.locator('.basisPrice .a-text-price .a-offscreen').first
+        if old_offscreen.count():
+            text = old_offscreen.inner_text().strip()
+            if text:
+                preco_anterior = limpar_preco(text)
+                log(f"DEBUG: Preço anterior via .basisPrice .a-offscreen = {preco_anterior}")
+    except:
+        pass
+
     if preco_anterior is None:
         try:
-            elem_ant = page.locator('.andes-money-amount--previous').first
-            if elem_ant.is_visible():
-                inteiro_ant = elem_ant.locator('.andes-money-amount__fraction').inner_text().strip()
-                cents_ant_elem = elem_ant.locator('.andes-money-amount__cents')
-                cents_ant = cents_ant_elem.inner_text().strip() if cents_ant_elem.count() else "0"
-                preco_anterior = float(f"{inteiro_ant}.{cents_ant}")
-                log(f"DEBUG: Preço anterior (fallback) = {preco_anterior}")
+            strike = page.locator('.basisPrice .a-text-price').first
+            if strike.count():
+                text = strike.inner_text().strip()
+                match = re.search(r'R\$\s*([\d\.,]+)', text)
+                if match:
+                    preco_anterior = limpar_preco(match.group(1))
+                    log(f"DEBUG: Preço anterior via regex = {preco_anterior}")
         except:
             pass
 
     return preco_atual, preco_anterior
 
-def extrair_categoria_ml(page) -> str:
-    """Extrai a categoria do breadcrumb do Mercado Livre."""
+def extrair_categoria_amazon(page) -> str:
+    """Extrai a categoria mais específica do breadcrumb da Amazon."""
     try:
-        items = page.locator('.andes-breadcrumb__item')
-        if items.count() == 0:
+        links = page.locator('#wayfinding-breadcrumbs_feature_div ul li a')
+        if links.count() == 0:
             return ""
-        # Último item é o produto, penúltimo é a categoria mais específica
-        if items.count() >= 2:
-            categoria = items.nth(items.count() - 2).inner_text().strip()
-        else:
-            categoria = items.last.inner_text().strip()
-        # Normalização
-        if "Bebê" in categoria or "Infantil" in categoria:
-            return "Infantil"
-        if "Pet" in categoria or "Animal" in categoria:
-            return "Pets"
+        categoria = links.last.inner_text().strip()
+        # Mapeia para nosso padrão
+        if "Notebook" in categoria or "Computador" in categoria:
+            return "Informática"
+        if "Suporte" in categoria or "Acessórios" in categoria:
+            return "Acessórios de Informática"
         return categoria
     except:
         return ""
 
 def extrair_descricao(page) -> str:
+    try:
+        bullets = page.locator('#feature-bullets ul li span.a-list-item')
+        if bullets.count():
+            items = bullets.all_inner_texts()
+            desc = " ".join(items).strip()
+            if desc:
+                return desc[:1000]
+    except:
+        pass
     try:
         meta = page.locator('meta[name="description"]').first
         if meta.count():
@@ -143,48 +165,35 @@ def extrair_descricao(page) -> str:
                 return content[:500]
     except:
         pass
-    try:
-        desc = page.locator('.ui-pdp-description__content').first
-        if desc.count():
-            return desc.inner_text().strip()[:500]
-    except:
-        pass
     return ""
 
 def extrair_imagem_alta_resolucao(page, nome_produto: str) -> str:
     img_url = None
     try:
-        figura = page.locator('.ui-pdp-gallery__figure__image').first
-        if figura.count():
-            img_url = figura.get_attribute('data-zoom')
+        landing = page.locator('#landingImage')
+        if landing.count():
+            img_url = landing.get_attribute('data-old-hires')
             if not img_url:
-                img_url = figura.get_attribute('src')
+                img_url = landing.get_attribute('src')
             if not img_url:
-                srcset = figura.get_attribute('srcset')
+                srcset = landing.get_attribute('srcset')
                 if srcset:
                     urls = re.findall(r'(https?://[^\s]+) \d+w', srcset)
                     if urls:
                         img_url = urls[-1]
         if not img_url:
-            imagens = page.query_selector_all('.ui-pdp-image')
-            for img in imagens:
-                if 'clip' not in img.get_attribute('class', ''):
-                    url = img.get_attribute('data-zoom') or img.get_attribute('src')
+            thumbs = page.locator('#altImages img')
+            if thumbs.count():
+                for i in range(thumbs.count()):
+                    url = thumbs.nth(i).get_attribute('src')
                     if url and 'http' in url:
-                        img_url = url
-                        break
-        if not img_url:
-            img_elem = page.locator('.ui-pdp-gallery__figure img').first
-            if img_elem.count():
-                img_url = img_elem.get_attribute('src')
+                        img_url = re.sub(r'/_AC_US\d+_\.jpg', '', url)
+                        if img_url.endswith('.jpg'):
+                            break
         if img_url:
-            img_url = img_url.split('?')[0]
-            if '_F.' in img_url or '_2X.' in img_url:
-                pass
-            else:
-                img_url = re.sub(r'-(?:O|B|V|C|L)\.', '-F.', img_url)
-                img_url = re.sub(r'/_Q_', '/_NQ_', img_url)
-                img_url = img_url.replace('_R.webp', '_F.webp')
+            img_url = re.sub(r'\._AC_[A-Z0-9]+_\.', '.', img_url)
+            if img_url.startswith('//'):
+                img_url = 'https:' + img_url
             headers = {'User-Agent': random.choice(USER_AGENTS)}
             resp = requests.get(img_url, headers=headers, timeout=15)
             if resp.status_code == 200:
@@ -196,7 +205,7 @@ def extrair_imagem_alta_resolucao(page, nome_produto: str) -> str:
                 img.save(filepath, 'JPEG', quality=90)
                 return filename
     except Exception as e:
-        log(f"Erro na imagem: {e}")
+        log(f"Erro ao extrair imagem: {e}")
     return ""
 
 def carregar_json_existente():
@@ -217,26 +226,6 @@ def salvar_json(produtos_por_link):
     with open(JSON_PATH, 'w', encoding='utf-8') as f:
         json.dump(list(produtos_por_link.values()), f, indent=2, ensure_ascii=False)
 
-def clicar_ir_para_produto(page):
-    selectors = [
-        'a.poly-component__link--action-link:has-text("Ir para produto")',
-        'a.poly-component__link--action-link',
-        'a:has-text("Ir para produto")',
-        'a:has-text("Ver produto")'
-    ]
-    for selector in selectors:
-        try:
-            btn = page.locator(selector).first
-            if btn.is_visible():
-                log("Botão 'Ir para produto' encontrado. Clicando...")
-                with page.expect_navigation(wait_until="load", timeout=30000):
-                    btn.click()
-                log("Navegação concluída.")
-                return True
-        except:
-            continue
-    return False
-
 def processar_produto(page, link: str):
     max_tentativas = 3
     for tentativa in range(1, max_tentativas + 1):
@@ -244,6 +233,13 @@ def processar_produto(page, link: str):
         try:
             page.goto(link, timeout=60000, wait_until="domcontentloaded")
             random_delay(2, 4)
+
+            if 'amzn.to' in page.url or 'amzn.com' in page.url:
+                log("Link encurtado detectado, aguardando redirecionamento...")
+                page.wait_for_url(lambda url: 'amzn.to' not in url and 'amzn.com' not in url, timeout=15000)
+                random_delay(1, 2)
+
+            log(f"URL final: {page.url}")
 
             try:
                 cookie_btn = page.locator('button[data-testid="action:understood-button"]')
@@ -254,22 +250,16 @@ def processar_produto(page, link: str):
             except:
                 pass
 
-            if clicar_ir_para_produto(page):
-                try:
-                    page.wait_for_selector('h1.ui-pdp-title, .ui-pdp-title', timeout=20000)
-                except:
-                    log("Aviso: Título não apareceu após navegação.")
-                random_delay(1, 2)
-
             try:
-                page.wait_for_selector('h1.ui-pdp-title, .ui-pdp-title', timeout=40000)
+                page.wait_for_selector('#corePriceDisplay_desktop_feature_div .a-price-whole', timeout=30000)
+                random_delay(1, 2)
                 break
             except Exception as e:
-                log(f"Timeout aguardando título (tentativa {tentativa}): {e}")
+                log(f"Timeout aguardando preço (tentativa {tentativa}): {e}")
                 if tentativa == max_tentativas:
-                    log(f"Falha definitiva para {link} após {max_tentativas} tentativas.")
+                    log(f"Falha definitiva para {link}")
                     return None
-                log("Recarregando página...")
+                log("Recarregando...")
                 page.reload(wait_until="domcontentloaded")
                 random_delay(3, 5)
                 continue
@@ -279,27 +269,19 @@ def processar_produto(page, link: str):
                 return None
             random_delay(3, 5)
 
-    nome_elem = page.locator('h1.ui-pdp-title').first
-    if nome_elem.count() == 0:
-        nome_elem = page.locator('.ui-pdp-title').first
-    if nome_elem.count() == 0:
+    nome = extrair_nome(page)
+    if not nome:
         log(f"Nome não encontrado para {link}")
         return None
-    nome = nome_elem.inner_text().strip()
 
-    try:
-        page.wait_for_selector('div#price .andes-money-amount__fraction', timeout=15000)
-    except:
-        log("Aviso: Preço não apareceu em 15 segundos")
-
-    preco_atual, preco_anterior = extrair_preco(page)
+    preco_atual, preco_anterior = extrair_precos(page)
     if preco_atual is None or preco_atual == 0:
         log(f"Preço não encontrado para {link}")
         return None
 
     descricao = extrair_descricao(page) or nome
     imagem_filename = extrair_imagem_alta_resolucao(page, nome)
-    categoria = extrair_categoria_ml(page)
+    categoria = extrair_categoria_amazon(page)
 
     produto = {
         "id": extrair_id_produto(link),
@@ -310,7 +292,7 @@ def processar_produto(page, link: str):
         "link": link,
         "categoria": categoria
     }
-    if preco_anterior is not None:
+    if preco_anterior is not None and preco_anterior > 0:
         produto["preco_anterior"] = round(preco_anterior, 2)
 
     log(f"✔ Extraído: {nome} - R$ {preco_atual:.2f} | Categoria: {categoria}")
@@ -378,7 +360,7 @@ def main():
                 log(f"❌ Erro crítico em {link}: {e}")
             random_delay(5, 10)
 
-        log(f"\n✅ Concluído. Total: {len(produtos_por_link)}")
+        log(f"\n✅ Concluído. Total de produtos no JSON: {len(produtos_por_link)}")
         input("Pressione ENTER para fechar o navegador...")
         browser.close()
 

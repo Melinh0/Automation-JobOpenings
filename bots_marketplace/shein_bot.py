@@ -2,289 +2,393 @@ import os
 import re
 import time
 import json
+import random
 import requests
+import subprocess
 from datetime import datetime
+from pathlib import Path
+from urllib.parse import urlparse
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 from PIL import Image
 from io import BytesIO
 
-# ================= CONFIGURAÇÕES DE PASTAS =================
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# ================= CONFIGURAÇÕES =================
+LINKS_TXT = Path(r"C:\Users\yagom\Documents\GitHub\Automation-JobOpenings\txt\shein_links.txt")
+IMAGENS_DIR = Path(r"C:\Users\yagom\Documents\GitHub\garimpointeligente\public\images\shein_imagens")
+JSON_PATH = Path(r"C:\Users\yagom\Documents\GitHub\garimpointeligente\src\data\shein_produtos.json")
 
-JSON_DIR = os.path.join(BASE_DIR, "json")
-TXT_DIR = os.path.join(BASE_DIR, "txt")
-IMAGENS_DIR = os.path.join(BASE_DIR, "shein_imagens")
+# Perfil separado para Shein (evita conflito com o bot da Shopee)
+CHROME_PROFILE_DIR = Path(r"C:\Users\yagom\Documents\GitHub\Automation-JobOpenings\bots_marketplace\chrome_profile_shein")
+CHROME_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
 
-os.makedirs(JSON_DIR, exist_ok=True)
-os.makedirs(TXT_DIR, exist_ok=True)
-os.makedirs(IMAGENS_DIR, exist_ok=True)
+IMAGENS_DIR.mkdir(parents=True, exist_ok=True)
+JSON_PATH.parent.mkdir(parents=True, exist_ok=True)
 
-PRODUTOS_JSON = os.path.join(JSON_DIR, "shein_produtos.json")
-LINKS_TXT = os.path.join(TXT_DIR, "shein_links.txt")
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+]
 
-URL_BASE = "https://br.shein.com/"
-TERMO_BUSCA = "Tenis Esportivo Masculino"
+def kill_chrome_processes():
+    """Mata todos os processos do Chrome para liberar o perfil."""
+    try:
+        subprocess.run("taskkill /f /im chrome.exe", shell=True, capture_output=True)
+        log("Processos do Chrome finalizados.")
+        time.sleep(2)
+    except Exception as e:
+        log(f"Não foi possível matar processos do Chrome: {e}")
+
+def random_delay(min_sec=1.5, max_sec=4.0):
+    time.sleep(random.uniform(min_sec, max_sec))
 
 def log(msg):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
 
-def aceitar_cookies(page):
-    try:
-        page.wait_for_selector('.cmp_c_1100', timeout=15000)
-        log("Banner de cookies detectado.")
-        aceitar = page.locator('.cmp_c_1100 .cmp_c_2')
-        if aceitar.count() and aceitar.is_visible():
-            aceitar.click(force=True)
-            log("✅ Cookies aceitos.")
-            time.sleep(1)
-            return True
-    except PlaywrightTimeoutError:
-        log("Banner de cookies não apareceu (timeout).")
-    except Exception as e:
-        log(f"Erro ao aceitar cookies: {e}")
-    return False
+def sanitize_filename(name: str) -> str:
+    """Remove caracteres inválidos para nome de arquivo."""
+    name = re.sub(r'[\\/*?:"<>|]', "", name)
+    name = name.strip().replace(" ", "_")
+    return name[:200]
 
-def fechar_modal_cupons(page):
-    try:
-        page.wait_for_selector('.dialog-header-v2__close-btn', timeout=8000)
-        log("Modal de cupons detectado.")
-        fechar = page.locator('.dialog-header-v2__close-btn span')
-        if fechar.count() and fechar.is_visible():
-            fechar.click(force=True)
-            log("✅ Modal de cupons fechado.")
-            time.sleep(1)
-            return True
-    except PlaywrightTimeoutError:
-        log("Modal de cupons não apareceu.")
-    except Exception as e:
-        log(f"Erro ao fechar modal: {e}")
-    return False
+def extrair_id_produto(link: str) -> str:
+    """Extrai um ID do produto da URL (ex: último segmento numérico)."""
+    match = re.search(r'-p-(\d+)', link)
+    if match:
+        return match.group(1)
+    return link.rstrip('/').split('/')[-1].replace('.html', '')
 
-def buscar_termo(page, termo):
-    log(f"Buscando por '{termo}'...")
-    # Tenta ativar a barra de pesquisa
-    search_box = page.locator('section.search-box, .search-box')
-    if search_box.count():
-        search_box.first.click(force=True)
-        log("Barra de pesquisa ativada.")
-        time.sleep(1)
-    else:
-        log("Elemento search-box não encontrado.")
-        return
-
-    # Aguarda o input ficar visível (pode levar alguns segundos)
-    search_input = None
-    for tentativa in range(10):
-        for sel in ['input.search-input', 'input[type="search"]', 'input[name="header-search"]']:
-            if page.locator(sel).count():
-                candidate = page.locator(sel).first
-                if candidate.is_visible():
-                    search_input = candidate
-                    break
-        if search_input:
-            break
-        log(f"Aguardando campo de busca ficar visível... ({tentativa+1}/10)")
-        time.sleep(1)
-    if not search_input:
-        log("❌ Campo de busca não ficou visível após ativação.")
-        page.screenshot(path="debug_shein_search_fail.png")
-        return
-
-    search_input.fill(termo)
-    search_input.press("Enter")
-    page.wait_for_load_state("domcontentloaded")
-    time.sleep(5)
-    log("✅ Busca realizada.")
-
-def ordenar_menor_preco(page):
-    try:
-        # Abre o dropdown
-        sort_trigger = page.locator('.sui-select__trigger').first
-        sort_trigger.click(force=True)
-        time.sleep(1)
-        # Aguarda o menu aparecer
-        page.wait_for_selector('.sui-select__menu', timeout=5000)
-        # Seleciona a opção correta
-        opcao = page.locator('li.sui-select-option[aria-label="Preço de Baixo Para Alto"]')
-        if opcao.count():
-            opcao.click(force=True)
-            log("✅ Ordenação por menor preço aplicada.")
-            time.sleep(2)
-            return True
-    except Exception as e:
-        log(f"Erro ao ordenar: {e}")
-    return False
-
-def extrair_dados_produto(page, url_produto):
+def extrair_nome(page) -> str:
     try:
         nome_elem = page.locator('.product-intro__head-name h1')
         if nome_elem.count() == 0:
             nome_elem = page.locator('h1.fsp-element')
-        nome = nome_elem.inner_text().strip() if nome_elem.count() else "Sem nome"
-
-        preco_elem = page.locator('#productMainPriceId')
-        if preco_elem.count() == 0:
-            preco_elem = page.locator('.productPrice__main')
-        preco_texto = preco_elem.inner_text().strip() if preco_elem.count() else "0"
-        preco_limpo = re.sub(r'[^0-9,]', '', preco_texto).replace(',', '.')
-        preco = float(preco_limpo) if preco_limpo else 0.0
-
-        img_elem = page.locator('.crop-image-container__img').first
-        if img_elem.count() == 0:
-            img_elem = page.locator('.normal-picture__content-list .crop-image-container__img').first
-        img_url = img_elem.get_attribute('src') if img_elem.count() else None
-
-        return nome, preco, img_url
+        return nome_elem.inner_text().strip() if nome_elem.count() else ""
     except Exception as e:
-        log(f"Erro ao extrair dados da página {url_produto}: {e}")
-        return None, None, None
+        log(f"Erro ao extrair nome: {e}")
+        return ""
 
-def baixar_imagem(img_url, nome_produto):
-    if not img_url:
-        return None
+def extrair_precos(page) -> tuple:
+    preco_atual = None
+    preco_original = None
+
+    # Preço atual - #productMainPriceId
     try:
-        resp = requests.get(img_url, timeout=10)
-        if resp.status_code != 200:
-            return None
-        img = Image.open(BytesIO(resp.content))
-        nome_limpo = re.sub(r'[\\/*?:"<>|]', "", nome_produto)[:100]
-        caminho = os.path.join(IMAGENS_DIR, f"{nome_limpo}.png")
-        img.save(caminho, "PNG")
-        return caminho
+        price_container = page.locator('#productMainPriceId').first
+        if price_container.count():
+            text = price_container.inner_text().strip()
+            # Exemplo: "R$59,90" ou "R$59,90"
+            match = re.search(r'R\$\s*(\d+)[.,](\d{2})', text)
+            if match:
+                inteiro = match.group(1)
+                centavos = match.group(2)
+                preco_atual = float(f"{inteiro}.{centavos}")
+            else:
+                nums = re.findall(r'(\d+)[.,](\d{2})', text)
+                if nums:
+                    inteiro, centavos = nums[0]
+                    preco_atual = float(f"{inteiro}.{centavos}")
     except Exception as e:
-        log(f"Erro ao baixar imagem: {e}")
-        return None
+        log(f"Erro ao extrair preço atual: {e}")
 
-def processar_pagina(page, context, ids_processados, produtos_existentes):
+    # Preço original - .productDiscountInfo__retail
     try:
-        page.wait_for_selector('.product-card', timeout=15000)
+        retail = page.locator('.productDiscountInfo__retail').first
+        if retail.count():
+            text = retail.inner_text().strip()
+            match = re.search(r'R\$\s*([\d.,]+)', text)
+            if match:
+                num_str = match.group(1).replace('.', '').replace(',', '.')
+                preco_original = float(num_str)
+    except Exception as e:
+        log(f"Erro ao extrair preço original: {e}")
+
+    return preco_atual, preco_original
+
+def extrair_descricao(page) -> str:
+    try:
+        meta = page.locator('meta[name="description"]').first
+        if meta.count():
+            content = meta.get_attribute('content')
+            if content and len(content) > 20:
+                return content[:500]
     except:
-        log("Nenhum produto encontrado nesta página.")
-        return 0
+        pass
+    try:
+        desc = page.locator('.product-intro__description-content').first
+        if desc.count():
+            return desc.inner_text().strip()[:500]
+    except:
+        pass
+    return ""
 
-    cards = page.query_selector_all('.product-card')
-    log(f"Total de cards na página: {len(cards)}")
-    novos = 0
-    for card in cards:
-        # Busca o link do produto (prioriza o goods-title-link)
-        link_elem = card.query_selector('a.goods-title-link')
-        if not link_elem:
-            link_elem = card.query_selector('a.S-product-card__img-container')
-        if link_elem:
-            discount_attr = link_elem.get_attribute('data-discount')
-            if discount_attr:
-                try:
-                    desconto = int(discount_attr)
-                except:
-                    desconto = 0
-                if desconto >= 50:
-                    href = link_elem.get_attribute('href')
-                    if href and not href.startswith('http'):
-                        href = "https://br.shein.com" + href
-                    if href and href not in ids_processados:
-                        novos += 1
-                        log(f"Processando produto com desconto {desconto}%: {href}")
-                        with context.new_page() as product_page:
-                            try:
-                                product_page.goto(href, wait_until='domcontentloaded', timeout=30000)
-                                nome, preco, img_url = extrair_dados_produto(product_page, href)
-                                if nome:
-                                    imagem_local = baixar_imagem(img_url, nome) if img_url else None
-                                    dados = {
-                                        "nome": nome,
-                                        "url_produto": href,
-                                        "preco": preco,
-                                        "imagem_local": imagem_local,
-                                        "data_extracao": datetime.now().isoformat()
-                                    }
-                                    produtos_existentes.append(dados)
-                                    with open(PRODUTOS_JSON, "w", encoding="utf-8") as f:
-                                        json.dump(produtos_existentes, f, indent=2, ensure_ascii=False)
-                                    ids_processados.add(href)
-                                    with open(LINKS_TXT, "a", encoding="utf-8") as f_txt:
-                                        f_txt.write(href + "\n")
-                                    log(f"✅ Salvo: {nome} (R${preco:.2f})")
-                            except Exception as e:
-                                log(f"Erro ao carregar página do produto: {e}")
-                            finally:
-                                product_page.close()
-                        time.sleep(1)
-    return novos
+def extrair_categoria_shein(page) -> str:
+    try:
+        items = page.locator('.bread-crumb__item-link')
+        if items.count() == 0:
+            return ""
+        categoria = items.last.inner_text().strip()
+        if "Sapato" in categoria or "Tênis" in categoria:
+            return "Calçados"
+        return categoria
+    except:
+        return ""
 
-def tem_proxima_pagina(page):
-    next_btn = page.locator('button.sui-pagination__next')
-    if next_btn.count():
-        # Verifica se o botão não está desabilitado
-        is_disabled = next_btn.get_attribute('disabled') is not None
-        return not is_disabled
-    return False
+def extrair_imagem_alta_resolucao(page, nome_produto: str) -> str:
+    img_url = None
+    try:
+        container = page.locator('.normal-picture__content-list .crop-image-container').first
+        if container.count():
+            img_url = container.get_attribute('data-before-crop-src')
+            if img_url:
+                if img_url.startswith('//'):
+                    img_url = 'https:' + img_url
+                if '_thumbnail_' in img_url:
+                    img_url = re.sub(r'_thumbnail_\d+x\d+', '_thumbnail_900x', img_url)
+                img_url = re.sub(r'_220x293', '_900x', img_url)
+                log(f"DEBUG: Imagem via data-before-crop-src: {img_url}")
 
-def ir_proxima_pagina(page):
-    next_btn = page.locator('button.sui-pagination__next')
-    if next_btn.count() and not next_btn.is_disabled():
-        next_btn.click()
-        page.wait_for_load_state("domcontentloaded")
-        time.sleep(3)
-        return True
-    return False
+        if not img_url:
+            img_elem = page.locator('.crop-image-container__img').first
+            if img_elem.count():
+                img_url = img_elem.get_attribute('src')
+                if not img_url:
+                    img_url = img_elem.get_attribute('data-src')
+                if img_url and img_url.startswith('//'):
+                    img_url = 'https:' + img_url
+                log(f"DEBUG: Imagem via src: {img_url}")
+
+        if not img_url:
+            img_elem = page.locator('.normal-picture__content-list .crop-image-container__img').first
+            if img_elem.count():
+                img_url = img_elem.get_attribute('src') or img_elem.get_attribute('data-src')
+                if img_url and img_url.startswith('//'):
+                    img_url = 'https:' + img_url
+
+        if img_url:
+            img_url = img_url.split('?')[0]
+            headers = {'User-Agent': random.choice(USER_AGENTS)}
+            resp = requests.get(img_url, headers=headers, timeout=15)
+            if resp.status_code == 200:
+                img = Image.open(BytesIO(resp.content))
+                filename = sanitize_filename(nome_produto) + ".png"
+                filepath = IMAGENS_DIR / filename
+                if img.mode in ('RGBA', 'P'):
+                    img = img.convert('RGB')
+                img.save(filepath, 'PNG', quality=90)
+                return filename
+    except Exception as e:
+        log(f"Erro ao extrair imagem: {e}")
+    return ""
+
+def carregar_json_existente():
+    produtos_por_link = {}
+    if JSON_PATH.exists():
+        try:
+            with open(JSON_PATH, 'r', encoding='utf-8') as f:
+                dados = json.load(f)
+                if isinstance(dados, list):
+                    for prod in dados:
+                        if 'link' in prod:
+                            produtos_por_link[prod['link']] = prod
+        except Exception as e:
+            log(f"Erro ao carregar JSON: {e}")
+    return produtos_por_link
+
+def salvar_json(produtos_por_link):
+    with open(JSON_PATH, 'w', encoding='utf-8') as f:
+        json.dump(list(produtos_por_link.values()), f, indent=2, ensure_ascii=False)
+
+def aguardar_captcha(page):
+    """
+    Verifica se há captcha (ex: iframe do reCAPTCHA ou elemento de desafio).
+    Se existir, aguarda indefinidamente até que o captcha seja resolvido
+    (o usuário resolve manualmente). Retorna quando a página do produto estiver pronta.
+    """
+    # Seletores comuns de captcha na Shein (ajuste se necessário)
+    captcha_selectors = [
+        "iframe[src*='recaptcha']",
+        "iframe[src*='captcha']",
+        ".g-recaptcha",
+        "#captcha",
+        ".captcha-container",
+        ".challenge-container"
+    ]
+    captcha_detected = False
+    for selector in captcha_selectors:
+        if page.locator(selector).count():
+            captcha_detected = True
+            break
+
+    if not captcha_detected:
+        # Também pode detectar pela ausência do título do produto após alguns segundos
+        try:
+            page.wait_for_selector('.product-intro__head-name h1, h1.fsp-element', timeout=5000)
+            return  # Já carregou, sem captcha aparente
+        except:
+            captcha_detected = True
+
+    if captcha_detected:
+        log("⚠️ Captcha detectado! Por favor, resolva-o manualmente no navegador.")
+        log("Aguardando resolução do captcha...")
+        # Aguarda até que o título do produto apareça (indicando que o captcha foi resolvido)
+        try:
+            page.wait_for_selector('.product-intro__head-name h1, h1.fsp-element', timeout=0)
+            log("✅ Captcha resolvido. Continuando extração...")
+        except Exception as e:
+            # timeout=0 significa esperar indefinidamente
+            page.wait_for_selector('.product-intro__head-name h1, h1.fsp-element', timeout=0)
+            log("✅ Captcha resolvido. Continuando extração...")
+        random_delay(2, 4)
+
+def processar_produto(page, link: str):
+    max_tentativas = 2
+    for tentativa in range(1, max_tentativas + 1):
+        log(f"Acessando: {link} (tentativa {tentativa}/{max_tentativas})")
+        try:
+            page.goto(link, timeout=60000, wait_until="domcontentloaded")
+            random_delay(2, 4)
+
+            # Aceitar cookies
+            try:
+                cookie_btn = page.locator('.cmp_c_1100 .cmp_c_2')
+                if cookie_btn.count() and cookie_btn.is_visible():
+                    cookie_btn.click(force=True)
+                    log("Cookies aceitos.")
+                    random_delay(1, 2)
+            except:
+                pass
+
+            # Fechar modal de cupons
+            try:
+                close_btn = page.locator('.dialog-header-v2__close-btn span')
+                if close_btn.count() and close_btn.is_visible():
+                    close_btn.click(force=True)
+                    log("Modal de cupons fechado.")
+                    random_delay(1, 2)
+            except:
+                pass
+
+            # Aguardar captcha (se aparecer)
+            aguardar_captcha(page)
+
+            # Aguardar título do produto
+            try:
+                page.wait_for_selector('.product-intro__head-name h1, h1.fsp-element', timeout=20000)
+                break
+            except Exception as e:
+                log(f"Timeout aguardando título (tentativa {tentativa}): {e}")
+                if tentativa == max_tentativas:
+                    log(f"Falha definitiva para {link}")
+                    return None
+                log("Recarregando página...")
+                page.reload(wait_until="domcontentloaded")
+                random_delay(3, 5)
+                continue
+        except Exception as e:
+            log(f"Erro ao carregar página (tentativa {tentativa}): {e}")
+            if tentativa == max_tentativas:
+                return None
+            random_delay(3, 5)
+
+    nome = extrair_nome(page)
+    if not nome:
+        log(f"Nome não encontrado para {link}")
+        return None
+
+    preco_atual, preco_original = extrair_precos(page)
+    if preco_atual is None or preco_atual == 0:
+        log(f"Preço não encontrado para {link}")
+        return None
+
+    descricao = extrair_descricao(page) or nome
+    categoria = extrair_categoria_shein(page)
+    imagem_filename = extrair_imagem_alta_resolucao(page, nome)
+
+    produto = {
+        "id": extrair_id_produto(link),
+        "nome": nome,
+        "preco": round(preco_atual, 2),
+        "preco_original": round(preco_original, 2) if preco_original else None,
+        "descricao": descricao,
+        "imagem": imagem_filename,
+        "link": link,
+        "categoria": categoria if categoria else "Geral"
+    }
+
+    # 👇 CORREÇÃO: formatação condicional fora do formatador
+    preco_original_str = f"R$ {preco_original:.2f}" if preco_original else "N/A"
+    log(f"✔ Extraído: {nome} - R$ {preco_atual:.2f} | Original: {preco_original_str} | Categoria: {categoria}")
+    return produto
 
 def main():
+    # Mata processos do Chrome antes de começar (evita conflito de perfil)
+    kill_chrome_processes()
+
+    if not LINKS_TXT.exists():
+        log(f"Arquivo de links não encontrado: {LINKS_TXT}")
+        return
+
+    with open(LINKS_TXT, 'r', encoding='utf-8') as f:
+        links = [linha.strip() for linha in f if linha.strip().startswith('http')]
+
+    if not links:
+        log("Nenhum link válido encontrado.")
+        return
+
+    log(f"Total de links a processar: {len(links)}")
+    produtos_por_link = carregar_json_existente()
+
     with sync_playwright() as p:
-        browser = p.chromium.launch(
+        # Usa um perfil persistente separado para Shein
+        context = p.chromium.launch_persistent_context(
+            user_data_dir=str(CHROME_PROFILE_DIR),
             headless=False,
-            args=['--start-maximized', '--disable-blink-features=AutomationControlled']
+            viewport={'width': 1920, 'height': 1080},
+            user_agent=random.choice(USER_AGENTS),
+            locale='pt-BR',
+            timezone_id='America/Sao_Paulo',
+            extra_http_headers={
+                'Accept-Language': 'pt-BR,pt;q=0.9,en;q=0.8',
+                'Referer': 'https://www.google.com/'
+            },
+            args=[
+                '--start-maximized',
+                '--disable-blink-features=AutomationControlled',
+                '--no-sandbox',
+                '--disable-web-security',
+                '--disable-infobars',
+                '--disable-dev-shm-usage'
+            ]
         )
-        context = browser.new_context(
-            viewport=None,
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        )
+        # Script anti-detecção
+        context.add_init_script("""
+            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+            window.chrome = { runtime: {} };
+            Object.defineProperty(navigator, 'plugins', { get: () => [1,2,3,4,5] });
+            Object.defineProperty(navigator, 'languages', { get: () => ['pt-BR', 'pt', 'en'] });
+        """)
+
         page = context.new_page()
-        page.goto(URL_BASE, wait_until='domcontentloaded', timeout=60000)
-        page.wait_for_load_state("domcontentloaded")
-        time.sleep(3)
 
-        aceitar_cookies(page)
-        fechar_modal_cupons(page)
-
-        buscar_termo(page, TERMO_BUSCA)
-        ordenar_menor_preco(page)
-
-        # Aguarda os produtos carregarem
-        page.wait_for_selector('.product-card', timeout=15000)
-
-        # Carrega produtos já processados
-        produtos_existentes = []
-        ids_processados = set()
-        if os.path.exists(PRODUTOS_JSON):
+        for idx, link in enumerate(links, 1):
+            log(f"\n[{idx}/{len(links)}] Processando...")
             try:
-                with open(PRODUTOS_JSON, "r", encoding="utf-8") as f:
-                    conteudo = f.read().strip()
-                    if conteudo:
-                        produtos_existentes = json.loads(conteudo)
-                        for item in produtos_existentes:
-                            ids_processados.add(item.get("url_produto"))
+                produto = processar_produto(page, link)
+                if produto:
+                    produtos_por_link[link] = produto
+                    salvar_json(produtos_por_link)
+                    log(f"✅ Salvo/atualizado: {produto['nome']}")
+                else:
+                    log(f"❌ Falha ao extrair dados de {link}")
             except Exception as e:
-                log(f"⚠️ Erro ao ler JSON: {e}")
+                log(f"❌ Erro crítico em {link}: {e}")
+            random_delay(5, 10)
 
-        with open(LINKS_TXT, "w", encoding="utf-8") as f:
-            f.write("")
-
-        pagina_atual = 1
-        while True:
-            log(f"\n📄 Processando página {pagina_atual}...")
-            novos_produtos = processar_pagina(page, context, ids_processados, produtos_existentes)
-            log(f"Novos produtos salvos nesta página: {novos_produtos}")
-
-            if not tem_proxima_pagina(page):
-                log("Fim da paginação.")
-                break
-
-            ir_proxima_pagina(page)
-            pagina_atual += 1
-
-        log(f"\n✅ Extração concluída. Total de produtos salvos: {len(produtos_existentes)}")
+        log(f"\n✅ Concluído. Total de produtos no JSON: {len(produtos_por_link)}")
         input("Pressione ENTER para fechar o navegador...")
-        browser.close()
+        context.close()
 
 if __name__ == "__main__":
     main()
