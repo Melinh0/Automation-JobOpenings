@@ -57,12 +57,10 @@ def carregar_contexto_produtos():
                             nome = prod.get('nome', '')
                             categoria = prod.get('categoria', '')
                             if nome and categoria:
-                                # Limita nome a 100 caracteres
                                 nome_curto = nome[:100] + "..." if len(nome) > 100 else nome
                                 exemplos.append(f"- Produto: {nome_curto} | Categoria: {categoria}")
             except Exception as e:
                 print(f"[LLM] Erro ao carregar {json_path.name}: {e}")
-    # Limitar a 20 exemplos para não estourar o contexto
     if len(exemplos) > 20:
         exemplos = exemplos[:20]
     return "\n".join(exemplos)
@@ -83,24 +81,30 @@ def obter_categoria_llm(nome, descricao, categorias_existentes):
     cats = [c for c in set(categorias_existentes) if c and c.strip()]
     cats_str = ", ".join(cats) if cats else "nenhuma ainda"
 
-    # Carrega exemplos de produtos já classificados
     exemplos_str = carregar_contexto_produtos()
     contexto_exemplos = f"""
 Aqui estão alguns exemplos de produtos já classificados no sistema:
 {exemplos_str}
 """ if exemplos_str else ""
 
+    # Prompt melhorado para forçar reuso de categorias e evitar fragmentação
     prompt = f"""
 Você é um assistente que classifica produtos em categorias padronizadas.
+
+REGRAS IMPORTANTES:
+1. SEMPRE que possível, use UMA DAS CATEGORIAS JÁ EXISTENTES listadas abaixo.
+2. Evite criar novas categorias. Novas categorias só devem ser criadas se NENHUMA categoria existente se encaixar.
+3. Prefira categorias MAIS GENÉRICAS e abrangentes (ex: "Eletrônicos", "Roupas", "Calçados", "Casa", "Beleza", "Esportes", "Ferramentas").
+4. NUNCA crie categorias muito específicas (ex: "Tênis de corrida para asfalto"). Use "Calçados" ou "Esportes".
+5. Se o produto for parecido com produtos já classificados, use a MESMA categoria que eles.
+6. Responda APENAS com o nome da categoria, sem explicações.
+
 {contexto_exemplos}
 Produto atual: "{nome}"
 Descrição: "{desc}"
-Categorias já existentes no sistema (você pode reutilizá-las): {cats_str}
+Categorias já existentes no sistema (você deve priorizá-las): {cats_str}
 
-Responda APENAS com o nome da categoria mais adequada para este produto.
-- Se possível, use uma das categorias existentes.
-- Se nenhuma se encaixar, crie uma nova categoria curta e genérica (ex: "Eletrônicos", "Roupas", "Calçados", "Casa", "Beleza", etc.).
-- Não inclua explicações, apenas o nome da categoria.
+Categoria:
 """
 
     headers = {
