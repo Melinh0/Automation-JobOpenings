@@ -4,23 +4,28 @@ import json
 import time
 import random
 import requests
-import subprocess
+import logging
+import shutil
 from pathlib import Path
 from urllib.parse import urlparse
 from dotenv import load_dotenv
-from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.action_chains import ActionChains
+from selenium.webdriver.common.keys import Keys
+
+# Usa undetected_chromedriver (muito mais furtivo)
+import undetected_chromedriver as uc
 
 # Importa a função de categorização por IA
 from llm_category import obter_categoria_llm
 
-load_dotenv()
+# Configura logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
-CHROME_DEBUG_PORT = 9223  
+load_dotenv()
 
 # ================= CONFIGURAÇÕES =================
 def expand_path(path_str: str) -> Path:
@@ -30,6 +35,11 @@ def expand_path(path_str: str) -> Path:
 JSON_PATH = expand_path(os.getenv("JSON_SHOPEE", ""))
 IMAGES_DIR = expand_path(os.getenv("IMAGES_SHOPEE", ""))
 LINKS_FILE = expand_path(os.getenv("TXT_SHOPEE", ""))
+
+# Diretório de perfil persistente (onde o login será salvo)
+CHROME_USER_DATA_DIR = os.getenv("CHROME_USER_DATA_DIR", "/home/yago/.config/chrome_shopee_bot")
+# Garante que o diretório exista
+Path(CHROME_USER_DATA_DIR).mkdir(parents=True, exist_ok=True)
 
 IMAGES_DIR.mkdir(parents=True, exist_ok=True)
 JSON_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -73,7 +83,7 @@ def download_image(url: str, product_name: str) -> str:
                 f.write(chunk)
         return filename
     except Exception as e:
-        print(f"Erro ao baixar imagem: {e}")
+        logger.error(f"Erro ao baixar imagem: {e}")
         return ""
 
 def load_json():
@@ -104,7 +114,7 @@ def generate_new_id(existing_products):
 def read_links_from_txt():
     links = []
     if not LINKS_FILE.exists():
-        print(f"Arquivo de links não encontrado: {LINKS_FILE}")
+        logger.error(f"Arquivo de links não encontrado: {LINKS_FILE}")
         return links
     with open(LINKS_FILE, 'r', encoding='utf-8') as f:
         for line in f:
@@ -116,55 +126,46 @@ def read_links_from_txt():
 def human_delay(min_sec=1.0, max_sec=3.0):
     time.sleep(random.uniform(min_sec, max_sec))
 
-def human_scroll(driver, pixels=300):
-    """Rola a página de forma aleatória como um humano faria."""
-    scroll_by = random.randint(100, pixels)
-    driver.execute_script(f"window.scrollBy(0, {scroll_by});")
-    human_delay(0.01, 0.05)  # pequena pausa entre scrolls
+def random_mouse_jitter(driver, element=None):
+    try:
+        actions = ActionChains(driver)
+        if element and element.is_displayed():
+            actions.move_to_element(element).pause(0.1)
+            x_offset = random.randint(-5, 5)
+            y_offset = random.randint(-5, 5)
+            actions.move_by_offset(x_offset, y_offset).pause(0.1)
+            actions.move_to_element(element)
+            actions.perform()
+        else:
+            width = driver.execute_script("return window.innerWidth;")
+            height = driver.execute_script("return window.innerHeight;")
+            x = random.randint(50, width - 50)
+            y = random.randint(50, height - 50)
+            actions.move_by_offset(x, y).pause(0.1).perform()
+            actions.move_by_offset(-x, -y).perform()
+        human_delay(0.1, 0.3)
+    except Exception:
+        pass
 
 def human_click(driver, element):
-    """Clica em um elemento de forma mais natural: move o mouse e clica."""
-    actions = ActionChains(driver)
-    actions.move_to_element(element).pause(random.uniform(0.1, 0.3)).click().perform()
-    human_delay(0.2, 0.5)
-
-# ================= INICIAR CHROME COM DEPURAÇÃO =================
-def start_chrome_debug():
-    """Verifica se já há instância na porta configurada; se não, inicia o Chrome manualmente."""
-    import socket
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    result = sock.connect_ex(('127.0.0.1', CHROME_DEBUG_PORT))
-    sock.close()
-    if result == 0:
-        print(f"✅ Conexão com Chrome debug já ativa na porta {CHROME_DEBUG_PORT}. Reutilizando...")
+    try:
+        driver.execute_script("arguments[0].scrollIntoView({block: 'center', behavior: 'smooth'});", element)
+        human_delay(0.3, 0.7)
+        if not element.is_displayed() or not element.is_enabled():
+            return False
+        actions = ActionChains(driver)
+        actions.move_to_element(element).pause(random.uniform(0.1, 0.3))
+        actions.click().perform()
+        human_delay(0.2, 0.5)
         return True
-    else:
-        print(f"🚀 Iniciando Chrome com depuração remota na porta {CHROME_DEBUG_PORT}...")
-        chrome_path = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
-        user_data_dir = r"C:\chrome_debug"
-        cmd = [
-            chrome_path,
-            f"--remote-debugging-port={CHROME_DEBUG_PORT}",
-            f"--user-data-dir={user_data_dir}",
-            f"--remote-allow-origins=http://127.0.0.1:{CHROME_DEBUG_PORT}",
-            "--no-first-run",
-            "--no-default-browser-check"
-        ]
-        subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        for _ in range(20):
-            time.sleep(1)
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            if sock.connect_ex(('127.0.0.1', CHROME_DEBUG_PORT)) == 0:
-                sock.close()
-                print(f"✅ Chrome debug iniciado com sucesso na porta {CHROME_DEBUG_PORT}.")
-                return True
-            sock.close()
-        print(f"❌ Falha ao iniciar Chrome debug na porta {CHROME_DEBUG_PORT}. Verifique o caminho e permissões.")
-        return False
+    except Exception:
+        try:
+            driver.execute_script("arguments[0].click();", element)
+            return True
+        except:
+            return False
 
-# ================= FUNÇÕES DE SCRAPING HUMANIZADAS =================
 def accept_cookies_human(driver):
-    """Tenta aceitar cookies com ações humanas."""
     wait = WebDriverWait(driver, 10)
     selectors = [
         "button.Q4KP5g",
@@ -177,50 +178,116 @@ def accept_cookies_human(driver):
                 btn = wait.until(EC.element_to_be_clickable((By.XPATH, selector)))
             else:
                 btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, selector)))
-            human_click(driver, btn)
-            print("Cookies aceitos.")
-            return True
+            random_mouse_jitter(driver, btn)
+            if human_click(driver, btn):
+                logger.info("Cookies aceitos.")
+                return True
         except:
             continue
     return False
 
+def is_login_page(driver):
+    current_url = driver.current_url
+    if "login" in current_url.lower() or "account" in current_url.lower():
+        return True
+    try:
+        body = driver.find_element(By.TAG_NAME, "body").text.lower()
+        if "não está logado" in body or "página indisponível" in body or "faça login" in body:
+            return True
+    except:
+        pass
+    return False
+
+# ================= NAVEGAÇÃO HUMANIZADA =================
+def navigate_to_shopee_human(driver):
+    """Acessa o Google, pesquisa Shopee, clica no resultado e mantém sessão."""
+    logger.info("Acessando o Google para pesquisar Shopee...")
+    driver.get("https://www.google.com")
+    human_delay(5, 8)
+    
+    # Aceita cookies do Google (se aparecer)
+    try:
+        accept_btn = WebDriverWait(driver, 5).until(
+            EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), 'Aceitar')]"))
+        )
+        human_click(driver, accept_btn)
+    except:
+        pass
+    
+    # Pesquisa "shopee"
+    search_box = driver.find_element(By.NAME, "q")
+    for char in "shopee":
+        search_box.send_keys(char)
+        time.sleep(random.uniform(0.05, 0.15))
+    human_delay(0.5, 1)
+    search_box.send_keys(Keys.RETURN)
+    human_delay(8, 12)
+    
+    # Role a página de resultados
+    for _ in range(random.randint(2, 4)):
+        driver.execute_script(f"window.scrollBy(0, {random.randint(300, 600)});")
+        human_delay(1, 2)
+    
+    # Encontra e clica no link principal da Shopee
+    try:
+        shopee_link = WebDriverWait(driver, 15).until(
+            EC.element_to_be_clickable((By.XPATH, "//a[contains(@href, 'shopee.com.br')]"))
+        )
+        human_click(driver, shopee_link)
+        logger.info("Clique no resultado da Shopee")
+    except Exception as e:
+        logger.warning(f"Não encontrou link da Shopee no Google, acessando diretamente: {e}")
+        driver.get("https://shopee.com.br/")
+    
+    human_delay(10, 15)
+    
+    # Role a página inicial
+    for _ in range(random.randint(2, 5)):
+        driver.execute_script(f"window.scrollBy(0, {random.randint(300, 700)});")
+        human_delay(1.5, 3)
+        random_mouse_jitter(driver)
+    
+    accept_cookies_human(driver)
+
+# ================= FUNÇÕES DE EXTRAÇÃO =================
 def extract_product_name_human(driver):
     try:
-        # Espera o título com um tempo variável
         WebDriverWait(driver, 20).until(
             EC.presence_of_element_located((By.CSS_SELECTOR, "h1.vR6K3w"))
         )
-        # Rolagem leve para garantir que o elemento está visível
         driver.execute_script("window.scrollBy(0, 100);")
-        human_delay(0.2, 0.5)
+        human_delay(0.5, 1.0)
         elem = driver.find_element(By.CSS_SELECTOR, "h1.vR6K3w")
+        random_mouse_jitter(driver, elem)
         return elem.text.strip()
     except Exception as e:
-        print(f"Erro ao extrair nome: {e}")
+        logger.error(f"Erro ao extrair nome: {e}")
         return ""
 
 def extract_prices_human(driver):
     promo = 0.0
     original = None
-    # Pequena espera adicional para preços carregarem dinamicamente
-    human_delay(1, 2)
-    try:
-        promo_elem = WebDriverWait(driver, 15).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, "div.jRlVo0 div.IZPeQz"))
-        )
-        promo_str = promo_elem.text.strip()
-        if promo_str:
-            promo = parse_price(promo_str)
-    except Exception as e:
-        print(f"Erro ao capturar preço promocional: {e}")
-
+    human_delay(2, 4)
+    for attempt in range(3):
+        try:
+            promo_elem = WebDriverWait(driver, 8).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, "div.jRlVo0 div.IZPeQz"))
+            )
+            if promo_elem and promo_elem.is_displayed():
+                promo_str = promo_elem.text.strip()
+                if promo_str:
+                    promo = parse_price(promo_str)
+                    if promo > 0:
+                        break
+        except:
+            pass
+        human_delay(1, 2)
     if promo == 0.0:
         try:
             fallback_promo = driver.find_element(By.CSS_SELECTOR, "div.jRlVo0 .IZPeQz, div.jRlVo0 ._2eqbU")
             promo = parse_price(fallback_promo.text.strip())
         except:
             pass
-
     try:
         orig_elem = driver.find_element(By.CSS_SELECTOR, "div.jRlVo0 div.ZA5sW5")
         orig_str = orig_elem.text.strip()
@@ -228,7 +295,6 @@ def extract_prices_human(driver):
             original = parse_price(orig_str)
     except:
         pass
-
     if promo == 0.0:
         try:
             any_price = driver.find_element(By.CSS_SELECTOR, "div.jRlVo0 div")
@@ -238,14 +304,14 @@ def extract_prices_human(driver):
     return promo, original
 
 def extract_image_url_human(driver):
-    # Rolar um pouco para ativar lazy loading
     driver.execute_script("window.scrollBy(0, 200);")
-    human_delay(1, 1.5)
+    human_delay(2, 3)
     try:
         WebDriverWait(driver, 20).until(
             EC.presence_of_element_located((By.CSS_SELECTOR, ".UdI7e2 img, .UBG7wZ img"))
         )
         img = driver.find_element(By.CSS_SELECTOR, ".UdI7e2 img")
+        random_mouse_jitter(driver, img)
         url = img.get_attribute('src') or img.get_attribute('data-src')
         if url and url.startswith('http'):
             url = re.sub(r'@resize_w\d+_nl', '', url)
@@ -265,7 +331,7 @@ def extract_image_url_human(driver):
         any_img = driver.find_element(By.CSS_SELECTOR, "img[src*='.sg']")
         return any_img.get_attribute('src')
     except Exception as e:
-        print(f"Erro ao extrair URL da imagem: {e}")
+        logger.error(f"Erro ao extrair URL da imagem: {e}")
         return ""
 
 def extrair_categoria_shopee_human(driver):
@@ -286,65 +352,55 @@ def extrair_categoria_shopee_human(driver):
         return ""
 
 def process_product_human(driver, link, existing_products):
-    print(f"\nProcessando: {link}")
+    logger.info(f"Processando: {link}")
     driver.get(link)
-    # Aguarda a página carregar de forma imprevisível
-    human_delay(3, 6)
+    human_delay(12, 18)  # espera longa para carregar
+
+    # Verifica se foi redirecionado para login
+    if is_login_page(driver):
+        logger.error("Página de login detectada. Por favor, faça login manualmente na janela do Chrome e pressione ENTER.")
+        input("Após fazer login, pressione ENTER para continuar...")
+        # Recarrega o link
+        driver.get(link)
+        human_delay(12, 18)
+        if is_login_page(driver):
+            logger.error("Ainda em página de login. Abortando este link.")
+            return None, False
+
     accept_cookies_human(driver)
 
-    # Rolagem aleatória para simular leitura
-    for _ in range(random.randint(1, 3)):
-        human_scroll(driver, 400)
-        human_delay(0.5, 1)
-
-    # Espera pelo título
     try:
-        WebDriverWait(driver, 30).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, "h1.vR6K3w"))
+        WebDriverWait(driver, 60).until(
+            EC.visibility_of_element_located((By.CSS_SELECTOR, "h1.vR6K3w"))
         )
     except Exception as e:
-        print(f"Timeout esperando título: {e}")
-        print(f"URL atual: {driver.current_url}")
-        if "login" in driver.current_url.lower() or "captcha" in driver.current_url.lower():
-            print("Página de login ou CAPTCHA detectada. Resolva manualmente na janela do Chrome e pressione ENTER...")
-            input("Após resolver, pressione ENTER para continuar...")
-            driver.get(link)
-            human_delay(5, 8)
-            try:
-                WebDriverWait(driver, 30).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, "h1.vR6K3w"))
-                )
-            except:
-                print("Falha mesmo após intervenção manual. Abortando.")
-                return None, False
-        else:
-            return None, False
+        logger.error(f"Timeout esperando título: {e}")
+        return None, False
+
+    # Rolagem suave – mais tempo
+    for _ in range(random.randint(3, 6)):
+        driver.execute_script(f"window.scrollBy(0, {random.randint(200, 500)});")
+        human_delay(1.5, 2.5)
+        random_mouse_jitter(driver)
 
     nome = extract_product_name_human(driver)
     if not nome:
+        logger.warning("Nome não encontrado.")
         return None, False
 
     preco_promo, preco_original = extract_prices_human(driver)
-
     if preco_promo == 0.0:
-        print(f"Preço promocional não encontrado para {link}. Abortando.")
+        logger.warning("Preço não encontrado.")
         return None, False
-
-    if preco_original is None or preco_original == 0.0:
-        preco_original = preco_promo
 
     img_url = extract_image_url_human(driver)
     imagem_filename = download_image(img_url, nome) if img_url else ""
     categoria_original = extrair_categoria_shopee_human(driver)
-    descricao = nome
-    categorias_existentes = [prod.get('categoria', '') for prod in existing_products if prod.get('categoria')]
-    categoria_sugerida = obter_categoria_llm(nome, descricao, categorias_existentes)
-    if categoria_sugerida:
-        print(f"🤖 IA sugeriu categoria: '{categoria_sugerida}' (original: '{categoria_original}')")
-        categoria = categoria_sugerida
-    else:
-        categoria = categoria_original if categoria_original else "Geral"
-        print(f"ℹ️ Usando categoria original: '{categoria}'")
+
+    categorias_existentes = [p.get('categoria', '') for p in existing_products if p.get('categoria')]
+    categoria_sugerida = obter_categoria_llm(nome, nome, categorias_existentes)
+    categoria = categoria_sugerida if categoria_sugerida else (categoria_original or "Geral")
+    logger.info(f"Produto: {nome} | Preço: R${preco_promo:.2f} | Categoria: {categoria}")
 
     existing = next((p for p in existing_products if p.get('link') == link), None)
     if existing:
@@ -361,7 +417,7 @@ def process_product_human(driver, link, existing_products):
             'link': link,
             'categoria': categoria
         })
-        print(f"Atualizado: {nome} (R${preco_promo:.2f}) | Categoria: {categoria}")
+        logger.info(f"Atualizado: {nome}")
         return existing, True
     else:
         new_id = generate_new_id(existing_products)
@@ -375,52 +431,56 @@ def process_product_human(driver, link, existing_products):
             "link": link,
             "categoria": categoria
         }
-        print(f"Novo produto: {nome} (ID {new_id}) - Preço: R${preco_promo:.2f} | Categoria: {categoria}")
+        logger.info(f"Novo produto: {nome} (ID {new_id})")
         return new_prod, False
 
-def run_bot_human(links):
-    chrome_options = Options()
-    chrome_options.add_experimental_option("debuggerAddress", f"127.0.0.1:{CHROME_DEBUG_PORT}")
-    driver = webdriver.Chrome(options=chrome_options)
+# ================= DRIVER STEALTH COM PERFIL PERSISTENTE =================
+def create_stealth_driver():
+    """Cria driver undetected com perfil persistente (mantém login)."""
+    options = uc.ChromeOptions()
+    options.add_argument("--disable-blink-features=AutomationControlled")
+    options.add_argument("--start-maximized")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    # Usa um perfil separado e persistente
+    options.add_argument(f"--user-data-dir={CHROME_USER_DATA_DIR}")
+    # Não define profile-directory, para usar o padrão do data-dir
+    driver = uc.Chrome(options=options, version_main=147)
+    # Remove a propriedade 'webdriver' (redundante, mas seguro)
+    driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+    return driver
 
-    # Opcional: abrir uma nova aba para não atrapalhar a manual
-    driver.execute_script("window.open('');")
-    driver.switch_to.window(driver.window_handles[-1])
-    print("Nova aba aberta. Iniciando coleta...")
-
+def run_bot(links):
+    driver = create_stealth_driver()
+    driver.set_window_size(random.randint(1200, 1600), random.randint(800, 1000))
     try:
+        # Navegação humanizada até a Shopee via Google
+        navigate_to_shopee_human(driver)
+        
         produtos = load_json()
         for idx, link in enumerate(links, 1):
-            print(f"\n=== Produto {idx}/{len(links)} ===")
-            try:
-                produto, is_update = process_product_human(driver, link, produtos)
-                if produto is None:
-                    print(f"Link ignorado: {link}")
-                    continue
-                if not is_update:
-                    produtos.append(produto)
-                save_json(produtos)
-                # Pausa longa e aleatória entre produtos (simula navegação humana)
-                human_delay(8, 15)
-            except Exception as e:
-                print(f"Erro crítico em {link}: {e}")
+            logger.info(f"=== Produto {idx}/{len(links)} ===")
+            produto, is_update = process_product_human(driver, link, produtos)
+            if produto is None:
+                logger.warning(f"Link ignorado: {link}")
                 continue
+            if not is_update:
+                produtos.append(produto)
+            save_json(produtos)
+            human_delay(30, 60)  # pausa longa entre produtos
+    except Exception as e:
+        logger.error(f"Erro fatal no bot: {e}", exc_info=True)
     finally:
-        # Não fecha o driver, apenas encerra o script
-        print("[INFO] Bot finalizado. A janela do Chrome permanecerá aberta.")
-        # driver.quit()  # Não fechar para preservar a sessão
+        logger.info("Bot finalizado. Fechando navegador em 5 segundos...")
+        time.sleep(5)
+        driver.quit()
 
 if __name__ == "__main__":
     lista_links = read_links_from_txt()
     if not lista_links:
-        print("Nenhum link encontrado.")
+        logger.error("Nenhum link encontrado.")
     else:
-        print(f"Total de links: {len(lista_links)}")
-        print("O bot usará Chrome com depuração remota (porta 9222).")
-        print("Você deve ter uma instância do Chrome com depuração ativa. Tentando iniciar automaticamente...")
-        if start_chrome_debug():
-            input("Pressione ENTER para iniciar a coleta...")
-            run_bot_human(lista_links)
-        else:
-            print("Não foi possível iniciar o Chrome debug. Abra manualmente com o comando:")
-            print(f' "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" --remote-debugging-port={CHROME_DEBUG_PORT} --user-data-dir="C:\\chrome_debug" --remote-allow-origins=http://127.0.0.1:{CHROME_DEBUG_PORT}')
+        logger.info(f"Total de links: {len(lista_links)}")
+        logger.info("Usando undetected-chromedriver com perfil persistente.")
+        input("Certifique-se de que o Chrome não está aberto. Pressione ENTER para iniciar...")
+        run_bot(lista_links)
