@@ -5,23 +5,19 @@ import time
 import random
 import requests
 import logging
-import shutil
 from pathlib import Path
 from urllib.parse import urlparse
 from dotenv import load_dotenv
+from bs4 import BeautifulSoup
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.common.action_chains import ActionChains
-from selenium.webdriver.common.keys import Keys
+from selenium.common.exceptions import TimeoutException
 
-# Usa undetected_chromedriver (muito mais furtivo)
 import undetected_chromedriver as uc
 
-# Importa a função de categorização por IA
 from llm_category import obter_categoria_llm
 
-# Configura logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
@@ -36,24 +32,18 @@ JSON_PATH = expand_path(os.getenv("JSON_SHOPEE", ""))
 IMAGES_DIR = expand_path(os.getenv("IMAGES_SHOPEE", ""))
 LINKS_FILE = expand_path(os.getenv("TXT_SHOPEE", ""))
 
-# Diretório de perfil persistente (onde o login será salvo)
-CHROME_USER_DATA_DIR = os.getenv("CHROME_USER_DATA_DIR", "/home/yago/.config/chrome_shopee_bot")
-# Garante que o diretório exista
+CHROME_USER_DATA_DIR = os.getenv("CHROME_USER_DATA_DIR", str(Path.home() / ".config" / "chrome_shopee_bot"))
 Path(CHROME_USER_DATA_DIR).mkdir(parents=True, exist_ok=True)
-
 IMAGES_DIR.mkdir(parents=True, exist_ok=True)
 JSON_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 if not LINKS_FILE.exists():
     raise FileNotFoundError(f"Arquivo de links não encontrado: {LINKS_FILE}")
-if not JSON_PATH.parent.exists():
-    raise FileNotFoundError(f"Diretório do JSON não encontrado: {JSON_PATH.parent}")
 
 # ================= FUNÇÕES AUXILIARES =================
 def sanitize_filename(name: str) -> str:
     name = re.sub(r'[\\/*?:"<>|]', "", name)
-    name = name.strip().replace(" ", "_")
-    return name[:200]
+    return name.strip().replace(" ", "_")[:200]
 
 def parse_price(price_str: str) -> float:
     if not price_str:
@@ -71,11 +61,14 @@ def download_image(url: str, product_name: str) -> str:
     try:
         parsed_url = urlparse(url)
         ext = os.path.splitext(parsed_url.path)[1]
-        if not ext or ext.lower() not in ['.jpg', '.jpeg', '.png', '.webp']:
+        if not ext or ext.lower() not in ('.jpg', '.jpeg', '.png', '.webp'):
             ext = '.jpg'
         filename = sanitize_filename(product_name) + ext
         filepath = IMAGES_DIR / filename
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Referer': 'https://shopee.com.br/'
+        }
         response = requests.get(url, headers=headers, stream=True, timeout=15)
         response.raise_for_status()
         with open(filepath, 'wb') as f:
@@ -105,8 +98,7 @@ def generate_new_id(existing_products):
         if prod.get('id', '').startswith('shopee_'):
             try:
                 num = int(prod['id'].split('_')[1])
-                if num > max_num:
-                    max_num = num
+                max_num = max(max_num, num)
             except:
                 continue
     return f"shopee_{max_num + 1:03d}"
@@ -123,356 +115,241 @@ def read_links_from_txt():
                 links.append(line)
     return links
 
-def human_delay(min_sec=1.0, max_sec=3.0):
-    time.sleep(random.uniform(min_sec, max_sec))
+# ================= DRIVER STEALTH (CHROME) - CORRIGIDO =================
+def create_stealth_driver():
+    options = uc.ChromeOptions()
+    options.add_argument("--disable-blink-features=AutomationControlled")
+    options.add_argument("--start-maximized")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument(f"--user-data-dir={CHROME_USER_DATA_DIR}")
+    options.add_argument("--disable-web-security")
+    options.add_argument("--disable-features=VizDisplayCompositor")
+    options.add_argument("--disable-gpu")
+    options.add_argument("--disable-infobars")
+    # Removidas as opções experimentais problemáticas
+    options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36")
 
-def random_mouse_jitter(driver, element=None):
+    # Não especifique version_main, deixe o undetected-chromedriver detectar automaticamente
+    driver = uc.Chrome(options=options)
+    driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+    return driver
+
+# ================= EXTRAÇÃO AVANÇADA DE DADOS =================
+def extract_from_store(html_content):
+    """Extrai dados do produto do window.__STORE__ (mais confiável)"""
+    match = re.search(r'window\.__STORE__\s*=\s*JSON\.parse\((".*?")\);', html_content, re.DOTALL)
+    if not match:
+        return {}
     try:
-        actions = ActionChains(driver)
-        if element and element.is_displayed():
-            actions.move_to_element(element).pause(0.1)
-            x_offset = random.randint(-5, 5)
-            y_offset = random.randint(-5, 5)
-            actions.move_by_offset(x_offset, y_offset).pause(0.1)
-            actions.move_to_element(element)
-            actions.perform()
+        json_str = json.loads(match.group(1))
+        state = json.loads(json_str)
+        pdp = state.get('DOMAIN_PDP', {}) or state.get('pdp', {})
+        data = pdp.get('data', {})
+        bff_data = data.get('PDP_BFF_DATA', {})
+        cached = bff_data.get('cachedMap', {})
+        for key, value in cached.items():
+            item = value.get('item', {})
+            if item.get('item_id'):
+                price = item.get('price_min') or item.get('price') or 0
+                if isinstance(price, (int, float)):
+                    price = price / 100000.0
+                return {
+                    'nome': item.get('title', ''),
+                    'preco': price,
+                    'imagem_url': f"https://cf.shopee.com.br/file/{item.get('image', '')}" if item.get('image') else '',
+                    'shop_location': item.get('shop_location', '')
+                }
+    except Exception as e:
+        logger.debug(f"Erro ao parsear __STORE__: {e}")
+    return {}
+
+def extract_product_info_from_html(html_content):
+    soup = BeautifulSoup(html_content, 'html.parser')
+    product_data = {}
+
+    # 1. __STORE__
+    store_data = extract_from_store(html_content)
+    if store_data:
+        product_data.update(store_data)
+
+    # 2. JSON-LD
+    if not product_data.get('nome'):
+        script_ld = soup.find('script', type='application/ld+json')
+        if script_ld and script_ld.string:
+            try:
+                data = json.loads(script_ld.string)
+                if isinstance(data, dict):
+                    product_data['nome'] = product_data.get('nome') or data.get('name')
+                    if not product_data.get('preco'):
+                        price = data.get('offers', {}).get('price', '')
+                        if price:
+                            product_data['preco'] = parse_price(str(price))
+                    if not product_data.get('imagem_url') and 'image' in data:
+                        product_data['imagem_url'] = data['image']
+            except:
+                pass
+
+    # 3. Título da página
+    if not product_data.get('nome'):
+        title = soup.find('title')
+        if title:
+            raw_title = title.text.strip()
+            product_data['nome'] = raw_title.split('|')[0].strip()
+
+    # 4. Seletor específico da Shopee
+    if not product_data.get('nome'):
+        h1 = soup.find('h1', class_=re.compile(r'WBVL_7|vR6K3w|product-title'))
+        if h1:
+            product_data['nome'] = h1.text.strip()
+
+    # 5. Preço via seletores do DOM
+    if not product_data.get('preco') or product_data['preco'] == 0.0:
+        for class_pattern in [r'IZPeQz', r'_67d6e6', r'price___', r'product-price']:
+            price_elem = soup.find('div', class_=re.compile(class_pattern))
+            if price_elem:
+                product_data['preco'] = parse_price(price_elem.text)
+                break
+        if not product_data.get('preco'):
+            meta_price = soup.find('meta', {'property': 'product:price:amount'})
+            if meta_price and meta_price.get('content'):
+                product_data['preco'] = parse_price(meta_price['content'])
+
+    # 6. Imagem
+    if not product_data.get('imagem_url'):
+        img = soup.find('img', class_=re.compile(r'rWN4DK|UdI7e2|product-image'))
+        if img and img.get('src'):
+            product_data['imagem_url'] = img['src']
         else:
-            width = driver.execute_script("return window.innerWidth;")
-            height = driver.execute_script("return window.innerHeight;")
-            x = random.randint(50, width - 50)
-            y = random.randint(50, height - 50)
-            actions.move_by_offset(x, y).pause(0.1).perform()
-            actions.move_by_offset(-x, -y).perform()
-        human_delay(0.1, 0.3)
-    except Exception:
-        pass
+            img = soup.find('img', src=re.compile(r'\.sg|\.jpg|\.png'))
+            if img and img.get('src'):
+                product_data['imagem_url'] = img['src']
 
-def human_click(driver, element):
-    try:
-        driver.execute_script("arguments[0].scrollIntoView({block: 'center', behavior: 'smooth'});", element)
-        human_delay(0.3, 0.7)
-        if not element.is_displayed() or not element.is_enabled():
-            return False
-        actions = ActionChains(driver)
-        actions.move_to_element(element).pause(random.uniform(0.1, 0.3))
-        actions.click().perform()
-        human_delay(0.2, 0.5)
-        return True
-    except Exception:
-        try:
-            driver.execute_script("arguments[0].click();", element)
-            return True
-        except:
-            return False
+    return product_data
 
-def accept_cookies_human(driver):
-    wait = WebDriverWait(driver, 10)
-    selectors = [
-        "button.Q4KP5g",
-        "//button[contains(text(), 'Aceitar todos')]",
-        "//button[contains(text(), 'Aceitar')]"
-    ]
-    for selector in selectors:
-        try:
-            if selector.startswith("//"):
-                btn = wait.until(EC.element_to_be_clickable((By.XPATH, selector)))
-            else:
-                btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, selector)))
-            random_mouse_jitter(driver, btn)
-            if human_click(driver, btn):
-                logger.info("Cookies aceitos.")
-                return True
-        except:
-            continue
-    return False
+# ================= PROCESSAMENTO DE UM PRODUTO (NOVA ABA, SEM POLLING) =================
+def process_product_in_new_tab(driver, link, existing_products):
+    """Abre link em nova aba, aguarda carregamento completo, extrai e fecha a aba."""
+    original_tab = driver.current_window_handle
 
-def is_login_page(driver):
-    current_url = driver.current_url
-    if "login" in current_url.lower() or "account" in current_url.lower():
-        return True
-    try:
-        body = driver.find_element(By.TAG_NAME, "body").text.lower()
-        if "não está logado" in body or "página indisponível" in body or "faça login" in body:
-            return True
-    except:
-        pass
-    return False
+    # Abre nova aba
+    driver.execute_script("window.open('');")
+    new_tab = driver.window_handles[-1]
+    driver.switch_to.window(new_tab)
 
-# ================= NAVEGAÇÃO HUMANIZADA =================
-def navigate_to_shopee_human(driver):
-    """Acessa o Google, pesquisa Shopee, clica no resultado e mantém sessão."""
-    logger.info("Acessando o Google para pesquisar Shopee...")
-    driver.get("https://www.google.com")
-    human_delay(5, 8)
-    
-    # Aceita cookies do Google (se aparecer)
-    try:
-        accept_btn = WebDriverWait(driver, 5).until(
-            EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), 'Aceitar')]"))
-        )
-        human_click(driver, accept_btn)
-    except:
-        pass
-    
-    # Pesquisa "shopee"
-    search_box = driver.find_element(By.NAME, "q")
-    for char in "shopee":
-        search_box.send_keys(char)
-        time.sleep(random.uniform(0.05, 0.15))
-    human_delay(0.5, 1)
-    search_box.send_keys(Keys.RETURN)
-    human_delay(8, 12)
-    
-    # Role a página de resultados
-    for _ in range(random.randint(2, 4)):
-        driver.execute_script(f"window.scrollBy(0, {random.randint(300, 600)});")
-        human_delay(1, 2)
-    
-    # Encontra e clica no link principal da Shopee
-    try:
-        shopee_link = WebDriverWait(driver, 15).until(
-            EC.element_to_be_clickable((By.XPATH, "//a[contains(@href, 'shopee.com.br')]"))
-        )
-        human_click(driver, shopee_link)
-        logger.info("Clique no resultado da Shopee")
-    except Exception as e:
-        logger.warning(f"Não encontrou link da Shopee no Google, acessando diretamente: {e}")
-        driver.get("https://shopee.com.br/")
-    
-    human_delay(10, 15)
-    
-    # Role a página inicial
-    for _ in range(random.randint(2, 5)):
-        driver.execute_script(f"window.scrollBy(0, {random.randint(300, 700)});")
-        human_delay(1.5, 3)
-        random_mouse_jitter(driver)
-    
-    accept_cookies_human(driver)
-
-# ================= FUNÇÕES DE EXTRAÇÃO =================
-def extract_product_name_human(driver):
-    try:
-        WebDriverWait(driver, 20).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, "h1.vR6K3w"))
-        )
-        driver.execute_script("window.scrollBy(0, 100);")
-        human_delay(0.5, 1.0)
-        elem = driver.find_element(By.CSS_SELECTOR, "h1.vR6K3w")
-        random_mouse_jitter(driver, elem)
-        return elem.text.strip()
-    except Exception as e:
-        logger.error(f"Erro ao extrair nome: {e}")
-        return ""
-
-def extract_prices_human(driver):
-    promo = 0.0
-    original = None
-    human_delay(2, 4)
-    for attempt in range(3):
-        try:
-            promo_elem = WebDriverWait(driver, 8).until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, "div.jRlVo0 div.IZPeQz"))
-            )
-            if promo_elem and promo_elem.is_displayed():
-                promo_str = promo_elem.text.strip()
-                if promo_str:
-                    promo = parse_price(promo_str)
-                    if promo > 0:
-                        break
-        except:
-            pass
-        human_delay(1, 2)
-    if promo == 0.0:
-        try:
-            fallback_promo = driver.find_element(By.CSS_SELECTOR, "div.jRlVo0 .IZPeQz, div.jRlVo0 ._2eqbU")
-            promo = parse_price(fallback_promo.text.strip())
-        except:
-            pass
-    try:
-        orig_elem = driver.find_element(By.CSS_SELECTOR, "div.jRlVo0 div.ZA5sW5")
-        orig_str = orig_elem.text.strip()
-        if orig_str:
-            original = parse_price(orig_str)
-    except:
-        pass
-    if promo == 0.0:
-        try:
-            any_price = driver.find_element(By.CSS_SELECTOR, "div.jRlVo0 div")
-            promo = parse_price(any_price.text.strip())
-        except:
-            pass
-    return promo, original
-
-def extract_image_url_human(driver):
-    driver.execute_script("window.scrollBy(0, 200);")
-    human_delay(2, 3)
-    try:
-        WebDriverWait(driver, 20).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, ".UdI7e2 img, .UBG7wZ img"))
-        )
-        img = driver.find_element(By.CSS_SELECTOR, ".UdI7e2 img")
-        random_mouse_jitter(driver, img)
-        url = img.get_attribute('src') or img.get_attribute('data-src')
-        if url and url.startswith('http'):
-            url = re.sub(r'@resize_w\d+_nl', '', url)
-            return url
-    except:
-        pass
-    try:
-        thumbnails = driver.find_elements(By.CSS_SELECTOR, ".UBG7wZ .YM40Nc img")
-        for thumb in thumbnails:
-            url = thumb.get_attribute('src') or thumb.get_attribute('data-src')
-            if url and url.startswith('http') and 'video' not in url.lower():
-                url = re.sub(r'@resize_w\d+_nl', '', url)
-                return url
-    except:
-        pass
-    try:
-        any_img = driver.find_element(By.CSS_SELECTOR, "img[src*='.sg']")
-        return any_img.get_attribute('src')
-    except Exception as e:
-        logger.error(f"Erro ao extrair URL da imagem: {e}")
-        return ""
-
-def extrair_categoria_shopee_human(driver):
-    try:
-        breadcrumbs = WebDriverWait(driver, 10).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, ".idLK2l"))
-        )
-        links = breadcrumbs.find_elements(By.CSS_SELECTOR, "a.EtYbJs")
-        if len(links) == 0:
-            return ""
-        categoria = links[-1].text.strip()
-        if "Animais" in categoria or "Pet" in categoria:
-            return "Pets"
-        if "Celular" in categoria or "Smartphone" in categoria:
-            return "Acessórios de Celular"
-        return categoria
-    except:
-        return ""
-
-def process_product_human(driver, link, existing_products):
-    logger.info(f"Processando: {link}")
+    logger.info(f"Acessando: {link}")
     driver.get(link)
-    human_delay(12, 18)  # espera longa para carregar
 
-    # Verifica se foi redirecionado para login
-    if is_login_page(driver):
-        logger.error("Página de login detectada. Por favor, faça login manualmente na janela do Chrome e pressione ENTER.")
-        input("Após fazer login, pressione ENTER para continuar...")
-        # Recarrega o link
-        driver.get(link)
-        human_delay(12, 18)
-        if is_login_page(driver):
-            logger.error("Ainda em página de login. Abortando este link.")
-            return None, False
-
-    accept_cookies_human(driver)
-
+    # Aguarda até 20 segundos pelo elemento do título do produto
     try:
-        WebDriverWait(driver, 60).until(
-            EC.visibility_of_element_located((By.CSS_SELECTOR, "h1.vR6K3w"))
+        WebDriverWait(driver, 20).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, "h1.WBVL_7, .WBVL_7, .IZPeQz"))
         )
-    except Exception as e:
-        logger.error(f"Timeout esperando título: {e}")
+        logger.debug("Página do produto carregada.")
+    except TimeoutException:
+        logger.warning("Timeout esperando página. Tentando extrair parcialmente.")
+
+    # Pausa extra para garantir renderização de JS (simula humano)
+    time.sleep(2)
+
+    html = driver.page_source
+
+    # Fecha a aba e volta para a original
+    driver.close()
+    driver.switch_to.window(original_tab)
+
+    if not html or len(html) < 2000:
+        logger.error(f"HTML insuficiente (tamanho: {len(html)})")
+        debug_path = Path("debug_html") / f"{int(time.time())}_failed.html"
+        debug_path.parent.mkdir(exist_ok=True)
+        debug_path.write_text(html if html else "EMPTY", encoding='utf-8')
         return None, False
 
-    # Rolagem suave – mais tempo
-    for _ in range(random.randint(3, 6)):
-        driver.execute_script(f"window.scrollBy(0, {random.randint(200, 500)});")
-        human_delay(1.5, 2.5)
-        random_mouse_jitter(driver)
+    data = extract_product_info_from_html(html)
+    nome = data.get('nome')
+    preco = data.get('preco', 0.0)
+    img_url = data.get('imagem_url', '')
 
-    nome = extract_product_name_human(driver)
-    if not nome:
-        logger.warning("Nome não encontrado.")
+    # Validação do nome
+    if not nome or nome.strip().lower() in ["shopee", "shopping", "produto", "product", "shopee brasil"] or len(nome) < 5:
+        logger.error(f"Nome inválido: '{nome}'")
+        debug_path = Path("debug_html") / f"{int(time.time())}_generic_name.html"
+        debug_path.parent.mkdir(exist_ok=True)
+        debug_path.write_text(html, encoding='utf-8')
         return None, False
 
-    preco_promo, preco_original = extract_prices_human(driver)
-    if preco_promo == 0.0:
-        logger.warning("Preço não encontrado.")
-        return None, False
+    # Tratamento de preço
+    if preco == 0.0:
+        logger.warning(f"Preço não encontrado para {nome}. Tentando regex...")
+        price_match = re.search(r'R\$\s*([\d\.,]+)', html)
+        if price_match:
+            preco = parse_price(price_match.group(0))
+        else:
+            cents_match = re.search(r'"price"\s*:\s*(\d+)', html)
+            if cents_match:
+                preco = int(cents_match.group(1)) / 100.0
 
-    img_url = extract_image_url_human(driver)
     imagem_filename = download_image(img_url, nome) if img_url else ""
-    categoria_original = extrair_categoria_shopee_human(driver)
 
+    # Categoria via IA
     categorias_existentes = [p.get('categoria', '') for p in existing_products if p.get('categoria')]
     categoria_sugerida = obter_categoria_llm(nome, nome, categorias_existentes)
-    categoria = categoria_sugerida if categoria_sugerida else (categoria_original or "Geral")
-    logger.info(f"Produto: {nome} | Preço: R${preco_promo:.2f} | Categoria: {categoria}")
+    categoria = categoria_sugerida if categoria_sugerida else "Geral"
 
     existing = next((p for p in existing_products if p.get('link') == link), None)
     if existing:
-        if existing.get('nome') != nome:
-            old_img = IMAGES_DIR / existing.get('imagem', '')
+        if existing.get('nome') != nome and existing.get('imagem'):
+            old_img = IMAGES_DIR / existing['imagem']
             if old_img.exists():
                 old_img.unlink()
         existing.update({
             'nome': nome,
-            'preco': preco_promo,
-            'preco_original': preco_original,
+            'preco': preco,
+            'preco_original': preco,
             'descricao': nome,
             'imagem': imagem_filename,
             'link': link,
             'categoria': categoria
         })
-        logger.info(f"Atualizado: {nome}")
+        logger.info(f"Atualizado: {nome} | Preço: R${preco:.2f}")
         return existing, True
     else:
         new_id = generate_new_id(existing_products)
         new_prod = {
             "id": new_id,
             "nome": nome,
-            "preco": preco_promo,
-            "preco_original": preco_original,
+            "preco": preco,
+            "preco_original": preco,
             "descricao": nome,
             "imagem": imagem_filename,
             "link": link,
             "categoria": categoria
         }
-        logger.info(f"Novo produto: {nome} (ID {new_id})")
+        logger.info(f"Novo produto: {nome} (ID {new_id}) | Preço: R${preco:.2f}")
         return new_prod, False
 
-# ================= DRIVER STEALTH COM PERFIL PERSISTENTE =================
-def create_stealth_driver():
-    """Cria driver undetected com perfil persistente (mantém login)."""
-    options = uc.ChromeOptions()
-    options.add_argument("--disable-blink-features=AutomationControlled")
-    options.add_argument("--start-maximized")
-    options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage")
-    # Usa um perfil separado e persistente
-    options.add_argument(f"--user-data-dir={CHROME_USER_DATA_DIR}")
-    # Não define profile-directory, para usar o padrão do data-dir
-    driver = uc.Chrome(options=options, version_main=147)
-    # Remove a propriedade 'webdriver' (redundante, mas seguro)
-    driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-    return driver
-
+# ================= MAIN =================
 def run_bot(links):
     driver = create_stealth_driver()
-    driver.set_window_size(random.randint(1200, 1600), random.randint(800, 1000))
     try:
-        # Navegação humanizada até a Shopee via Google
-        navigate_to_shopee_human(driver)
-        
+        time.sleep(3)
         produtos = load_json()
         for idx, link in enumerate(links, 1):
             logger.info(f"=== Produto {idx}/{len(links)} ===")
-            produto, is_update = process_product_human(driver, link, produtos)
+            produto, is_update = process_product_in_new_tab(driver, link, produtos)
             if produto is None:
                 logger.warning(f"Link ignorado: {link}")
                 continue
             if not is_update:
                 produtos.append(produto)
             save_json(produtos)
-            human_delay(30, 60)  # pausa longa entre produtos
+            # Pausa entre produtos (5-15 segundos) para evitar detecção
+            time.sleep(random.uniform(5, 15))
     except Exception as e:
-        logger.error(f"Erro fatal no bot: {e}", exc_info=True)
+        logger.error(f"Erro fatal: {e}", exc_info=True)
     finally:
-        logger.info("Bot finalizado. Fechando navegador em 5 segundos...")
-        time.sleep(5)
+        logger.info("Fechando navegador em 3 segundos...")
+        time.sleep(3)
         driver.quit()
 
 if __name__ == "__main__":
@@ -481,6 +358,6 @@ if __name__ == "__main__":
         logger.error("Nenhum link encontrado.")
     else:
         logger.info(f"Total de links: {len(lista_links)}")
-        logger.info("Usando undetected-chromedriver com perfil persistente.")
-        input("Certifique-se de que o Chrome não está aberto. Pressione ENTER para iniciar...")
+        logger.info("Navegação: nova aba, wait 20s, sem interrupção brusca.")
+        input("Pressione ENTER para iniciar...")
         run_bot(lista_links)
