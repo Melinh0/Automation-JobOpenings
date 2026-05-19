@@ -8,6 +8,7 @@ import shutil
 from pathlib import Path
 from dotenv import load_dotenv
 import pyautogui
+pyautogui.FAILSAFE = False
 import pyperclip
 from PIL import Image, ImageGrab
 
@@ -47,25 +48,23 @@ def choose_machine():
 
 MACHINE = choose_machine()
 PREFIX = "SHOPEE_LINUX" if MACHINE == "linux" else "SHOPEE_WINDOWS"
-METHOD = os.getenv(f"{PREFIX}_METHOD", "save" if MACHINE == "linux" else "copy")
 
 ADDRESS_BAR_X = int(os.getenv(f"{PREFIX}_ADDRESS_BAR_X", "0"))
 ADDRESS_BAR_Y = int(os.getenv(f"{PREFIX}_ADDRESS_BAR_Y", "0"))
 CLICK_COPY_X = int(os.getenv(f"{PREFIX}_CLICK_COPY_X", "0"))
 CLICK_COPY_Y = int(os.getenv(f"{PREFIX}_CLICK_COPY_Y", "0"))
+FIRST_CLICK_X = int(os.getenv(f"{PREFIX}_FIRST_CLICK_X", "0"))
+FIRST_CLICK_Y = int(os.getenv(f"{PREFIX}_FIRST_CLICK_Y", "0"))
+RIGHT_CLICK_X = int(os.getenv(f"{PREFIX}_RIGHT_CLICK_X", "0"))
+RIGHT_CLICK_Y = int(os.getenv(f"{PREFIX}_RIGHT_CLICK_Y", "0"))
+COPY_IMAGE_CLICK_X = int(os.getenv(f"{PREFIX}_COPY_IMAGE_CLICK_X", "0"))
+COPY_IMAGE_CLICK_Y = int(os.getenv(f"{PREFIX}_COPY_IMAGE_CLICK_Y", "0"))
 
-if MACHINE == "linux":
-    SAVE_RIGHT_CLICK_X = int(os.getenv(f"{PREFIX}_SAVE_RIGHT_CLICK_X", "0"))
-    SAVE_RIGHT_CLICK_Y = int(os.getenv(f"{PREFIX}_SAVE_RIGHT_CLICK_Y", "0"))
-    FILENAME_FIELD_X = int(os.getenv(f"{PREFIX}_FILENAME_FIELD_X", "0"))
-    FILENAME_FIELD_Y = int(os.getenv(f"{PREFIX}_FILENAME_FIELD_Y", "0"))
-else:
-    FIRST_CLICK_X = int(os.getenv(f"{PREFIX}_FIRST_CLICK_X", "0"))
-    FIRST_CLICK_Y = int(os.getenv(f"{PREFIX}_FIRST_CLICK_Y", "0"))
-    RIGHT_CLICK_X = int(os.getenv(f"{PREFIX}_RIGHT_CLICK_X", "0"))
-    RIGHT_CLICK_Y = int(os.getenv(f"{PREFIX}_RIGHT_CLICK_Y", "0"))
-    COPY_IMAGE_CLICK_X = int(os.getenv(f"{PREFIX}_COPY_IMAGE_CLICK_X", "0"))
-    COPY_IMAGE_CLICK_Y = int(os.getenv(f"{PREFIX}_COPY_IMAGE_CLICK_Y", "0"))
+if any(v == 0 for v in [ADDRESS_BAR_X, ADDRESS_BAR_Y, CLICK_COPY_X, CLICK_COPY_Y,
+                        FIRST_CLICK_X, FIRST_CLICK_Y, RIGHT_CLICK_X, RIGHT_CLICK_Y,
+                        COPY_IMAGE_CLICK_X, COPY_IMAGE_CLICK_Y]):
+    logger.error(f"Coordenadas para {PREFIX} estão incompletas no .env")
+    exit(1)
 
 def sanitize_filename(name: str) -> str:
     name = re.sub(r'[\\/*?:"<>|]', "", name)
@@ -207,25 +206,6 @@ def copy_page_content():
     time.sleep(1)
     return pyperclip.paste()
 
-def save_image_via_context_menu(filename):
-    pyautogui.click(SAVE_RIGHT_CLICK_X, SAVE_RIGHT_CLICK_Y, button='right')
-    time.sleep(1.2)
-    pyautogui.press('s')
-    time.sleep(2)
-    pyautogui.click(FILENAME_FIELD_X, FILENAME_FIELD_Y)
-    time.sleep(0.5)
-    pyautogui.hotkey('ctrl', 'a')
-    time.sleep(0.3)
-    pyautogui.write(filename)
-    time.sleep(0.8)
-    pyautogui.press('enter')
-    time.sleep(2)
-
-def get_latest_downloaded_file():
-    download_dir = Path.home() / "Downloads"
-    files = list(download_dir.glob("*"))
-    return max(files, key=os.path.getctime) if files else None
-
 def copy_image_via_coordinates():
     pyautogui.click(FIRST_CLICK_X, FIRST_CLICK_Y)
     time.sleep(0.8)
@@ -239,29 +219,13 @@ def copy_image_via_coordinates():
     return img
 
 def capture_image(safe_name):
-    if METHOD == "save":
-        save_image_via_context_menu(safe_name)
-        time.sleep(2)
-        downloaded = get_latest_downloaded_file()
-        if downloaded and downloaded.suffix.lower() in ('.webp', '.jpg', '.jpeg', '.png'):
-            final_path = IMAGES_DIR / safe_name
-            if downloaded.suffix.lower() != '.png':
-                with Image.open(downloaded) as img:
-                    img.save(final_path, 'PNG')
-                downloaded.unlink()
-            else:
-                shutil.move(str(downloaded), str(final_path))
-            return final_path.name
-        else:
-            return ""
+    imagem = copy_image_via_coordinates()
+    if imagem:
+        final_path = IMAGES_DIR / safe_name
+        imagem.save(final_path, 'PNG')
+        return safe_name
     else:
-        imagem = copy_image_via_coordinates()
-        if imagem:
-            final_path = IMAGES_DIR / safe_name
-            imagem.save(final_path, 'PNG')
-            return safe_name
-        else:
-            return ""
+        return ""
 
 def process_product(link, existing_products):
     type_link_and_enter(link)
@@ -346,6 +310,6 @@ if __name__ == "__main__":
         logger.error("Nenhum link encontrado.")
     else:
         logger.info(f"Total de links: {len(lista_links)}")
-        logger.info(f"Máquina selecionada: {MACHINE.upper()} - Método: {METHOD}")
+        logger.info(f"Máquina selecionada: {MACHINE.upper()}")
         input("Pressione ENTER para iniciar (navegador deve estar em primeiro plano)...")
         run_bot(lista_links)
