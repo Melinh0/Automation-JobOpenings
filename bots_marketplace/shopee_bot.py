@@ -9,7 +9,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 import pyautogui
 import pyperclip
-from PIL import Image
+from PIL import Image, ImageGrab
 
 from llm_category import obter_categoria_llm
 
@@ -32,14 +32,40 @@ JSON_PATH.parent.mkdir(parents=True, exist_ok=True)
 if not LINKS_FILE.exists():
     raise FileNotFoundError(f"Arquivo de links não encontrado: {LINKS_FILE}")
 
-ADDRESS_BAR_X = int(os.getenv("SHOPEE_ADDRESS_BAR_X", "264"))
-ADDRESS_BAR_Y = int(os.getenv("SHOPEE_ADDRESS_BAR_Y", "86"))
-CLICK_COPY_X = int(os.getenv("SHOPEE_CLICK_COPY_X", "552"))
-CLICK_COPY_Y = int(os.getenv("SHOPEE_CLICK_COPY_Y", "312"))
-SAVE_IMAGE_RIGHT_CLICK_X = int(os.getenv("SHOPEE_SAVE_IMAGE_RIGHT_CLICK_X", "308"))
-SAVE_IMAGE_RIGHT_CLICK_Y = int(os.getenv("SHOPEE_SAVE_IMAGE_RIGHT_CLICK_Y", "813"))
-FILENAME_FIELD_X = int(os.getenv("SHOPEE_FILENAME_FIELD_X", "500"))
-FILENAME_FIELD_Y = int(os.getenv("SHOPEE_FILENAME_FIELD_Y", "400"))
+def choose_machine():
+    print("\nEscolha a máquina que está usando:")
+    print("1 - Linux")
+    print("2 - Windows")
+    while True:
+        choice = input("Digite 1 ou 2: ").strip()
+        if choice == "1":
+            return "linux"
+        elif choice == "2":
+            return "windows"
+        else:
+            print("Opção inválida. Tente novamente.")
+
+MACHINE = choose_machine()
+PREFIX = "SHOPEE_LINUX" if MACHINE == "linux" else "SHOPEE_WINDOWS"
+METHOD = os.getenv(f"{PREFIX}_METHOD", "save" if MACHINE == "linux" else "copy")
+
+ADDRESS_BAR_X = int(os.getenv(f"{PREFIX}_ADDRESS_BAR_X", "0"))
+ADDRESS_BAR_Y = int(os.getenv(f"{PREFIX}_ADDRESS_BAR_Y", "0"))
+CLICK_COPY_X = int(os.getenv(f"{PREFIX}_CLICK_COPY_X", "0"))
+CLICK_COPY_Y = int(os.getenv(f"{PREFIX}_CLICK_COPY_Y", "0"))
+
+if MACHINE == "linux":
+    SAVE_RIGHT_CLICK_X = int(os.getenv(f"{PREFIX}_SAVE_RIGHT_CLICK_X", "0"))
+    SAVE_RIGHT_CLICK_Y = int(os.getenv(f"{PREFIX}_SAVE_RIGHT_CLICK_Y", "0"))
+    FILENAME_FIELD_X = int(os.getenv(f"{PREFIX}_FILENAME_FIELD_X", "0"))
+    FILENAME_FIELD_Y = int(os.getenv(f"{PREFIX}_FILENAME_FIELD_Y", "0"))
+else:
+    FIRST_CLICK_X = int(os.getenv(f"{PREFIX}_FIRST_CLICK_X", "0"))
+    FIRST_CLICK_Y = int(os.getenv(f"{PREFIX}_FIRST_CLICK_Y", "0"))
+    RIGHT_CLICK_X = int(os.getenv(f"{PREFIX}_RIGHT_CLICK_X", "0"))
+    RIGHT_CLICK_Y = int(os.getenv(f"{PREFIX}_RIGHT_CLICK_Y", "0"))
+    COPY_IMAGE_CLICK_X = int(os.getenv(f"{PREFIX}_COPY_IMAGE_CLICK_X", "0"))
+    COPY_IMAGE_CLICK_Y = int(os.getenv(f"{PREFIX}_COPY_IMAGE_CLICK_Y", "0"))
 
 def sanitize_filename(name: str) -> str:
     name = re.sub(r'[\\/*?:"<>|]', "", name)
@@ -182,7 +208,7 @@ def copy_page_content():
     return pyperclip.paste()
 
 def save_image_via_context_menu(filename):
-    pyautogui.click(SAVE_IMAGE_RIGHT_CLICK_X, SAVE_IMAGE_RIGHT_CLICK_Y, button='right')
+    pyautogui.click(SAVE_RIGHT_CLICK_X, SAVE_RIGHT_CLICK_Y, button='right')
     time.sleep(1.2)
     pyautogui.press('s')
     time.sleep(2)
@@ -199,6 +225,43 @@ def get_latest_downloaded_file():
     download_dir = Path.home() / "Downloads"
     files = list(download_dir.glob("*"))
     return max(files, key=os.path.getctime) if files else None
+
+def copy_image_via_coordinates():
+    pyautogui.click(FIRST_CLICK_X, FIRST_CLICK_Y)
+    time.sleep(0.8)
+    pyautogui.rightClick(RIGHT_CLICK_X, RIGHT_CLICK_Y)
+    time.sleep(0.8)
+    pyautogui.click(COPY_IMAGE_CLICK_X, COPY_IMAGE_CLICK_Y)
+    time.sleep(1.5)
+    img = ImageGrab.grabclipboard()
+    if img is None:
+        logger.warning("Nenhuma imagem copiada. Verifique as coordenadas.")
+    return img
+
+def capture_image(safe_name):
+    if METHOD == "save":
+        save_image_via_context_menu(safe_name)
+        time.sleep(2)
+        downloaded = get_latest_downloaded_file()
+        if downloaded and downloaded.suffix.lower() in ('.webp', '.jpg', '.jpeg', '.png'):
+            final_path = IMAGES_DIR / safe_name
+            if downloaded.suffix.lower() != '.png':
+                with Image.open(downloaded) as img:
+                    img.save(final_path, 'PNG')
+                downloaded.unlink()
+            else:
+                shutil.move(str(downloaded), str(final_path))
+            return final_path.name
+        else:
+            return ""
+    else:
+        imagem = copy_image_via_coordinates()
+        if imagem:
+            final_path = IMAGES_DIR / safe_name
+            imagem.save(final_path, 'PNG')
+            return safe_name
+        else:
+            return ""
 
 def process_product(link, existing_products):
     type_link_and_enter(link)
@@ -226,23 +289,7 @@ def process_product(link, existing_products):
         return None, False
 
     safe_name = sanitize_filename(nome) + '.png'
-    save_image_via_context_menu(safe_name)
-    time.sleep(2)
-    downloaded = get_latest_downloaded_file()
-
-    imagem_filename = ""
-    if downloaded and downloaded.suffix.lower() in ('.webp', '.jpg', '.jpeg', '.png'):
-        final_path = IMAGES_DIR / safe_name
-        if downloaded.suffix.lower() != '.png':
-            with Image.open(downloaded) as img:
-                img.save(final_path, 'PNG')
-            downloaded.unlink()
-        else:
-            shutil.move(str(downloaded), str(final_path))
-        imagem_filename = final_path.name
-        logger.info(f"Imagem salva: {imagem_filename}")
-    else:
-        logger.warning("Nenhuma imagem baixada.")
+    imagem_filename = capture_image(safe_name)
 
     categorias_existentes = [p.get('categoria', '') for p in existing_products if p.get('categoria')]
     contexto = f"Produto: {nome}\nCategoria sugerida pelo site: {categoria_extraida}"
@@ -271,11 +318,11 @@ def process_product(link, existing_products):
             "id": new_id,
             "nome": nome,
             "preco": preco,
-            "preco_original": preco,
-            "descricao": nome,
-            "imagem": imagem_filename,
-            "link": link,
-            "categoria": categoria
+            'preco_original': preco,
+            'descricao': nome,
+            'imagem': imagem_filename,
+            'link': link,
+            'categoria': categoria
         }
         logger.info(f"Novo produto: {nome} (ID {new_id}) | Preço: R${preco:.2f}")
         return new_prod, False
@@ -299,6 +346,6 @@ if __name__ == "__main__":
         logger.error("Nenhum link encontrado.")
     else:
         logger.info(f"Total de links: {len(lista_links)}")
-        logger.info("Usando pyautogui com extração robusta e melhor manipulação da caixa de diálogo.")
+        logger.info(f"Máquina selecionada: {MACHINE.upper()} - Método: {METHOD}")
         input("Pressione ENTER para iniciar (navegador deve estar em primeiro plano)...")
         run_bot(lista_links)
