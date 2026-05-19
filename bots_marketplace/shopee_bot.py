@@ -18,7 +18,6 @@ logger = logging.getLogger(__name__)
 
 load_dotenv()
 
-# ================= CONFIGURAÇÕES =================
 def expand_path(path_str: str) -> Path:
     expanded = os.path.expandvars(path_str)
     return Path(expanded)
@@ -33,7 +32,15 @@ JSON_PATH.parent.mkdir(parents=True, exist_ok=True)
 if not LINKS_FILE.exists():
     raise FileNotFoundError(f"Arquivo de links não encontrado: {LINKS_FILE}")
 
-# ================= FUNÇÕES AUXILIARES =================
+ADDRESS_BAR_X = int(os.getenv("SHOPEE_ADDRESS_BAR_X", "264"))
+ADDRESS_BAR_Y = int(os.getenv("SHOPEE_ADDRESS_BAR_Y", "86"))
+CLICK_COPY_X = int(os.getenv("SHOPEE_CLICK_COPY_X", "552"))
+CLICK_COPY_Y = int(os.getenv("SHOPEE_CLICK_COPY_Y", "312"))
+SAVE_IMAGE_RIGHT_CLICK_X = int(os.getenv("SHOPEE_SAVE_IMAGE_RIGHT_CLICK_X", "308"))
+SAVE_IMAGE_RIGHT_CLICK_Y = int(os.getenv("SHOPEE_SAVE_IMAGE_RIGHT_CLICK_Y", "813"))
+FILENAME_FIELD_X = int(os.getenv("SHOPEE_FILENAME_FIELD_X", "500"))
+FILENAME_FIELD_Y = int(os.getenv("SHOPEE_FILENAME_FIELD_Y", "400"))
+
 def sanitize_filename(name: str) -> str:
     name = re.sub(r'[\\/*?:"<>|]', "", name)
     return name.strip().replace(" ", "_")[:200]
@@ -86,19 +93,16 @@ def read_links_from_txt():
                 links.append(line)
     return links
 
-# ================= EXTRAÇÃO MELHORADA =================
 def extract_product_info_from_text(text: str):
     lines = [line.strip() for line in text.split('\n') if line.strip()]
     product_data = {'nome': '', 'preco': 0.0, 'preco_original': 0.0, 'categoria': ''}
     
-    # 1. Ignorar tudo até encontrar "Carrinho Faça login"
     start_idx = 0
     for i, line in enumerate(lines):
         if 'Carrinho Faça login' in line or 'carrinho' in line.lower():
             start_idx = i + 1
             break
     
-    # 2. Procurar o breadcrumb (Shopee > ... > categoria)
     breadcrumb_line = None
     for i in range(start_idx, len(lines)):
         line = lines[i]
@@ -112,13 +116,11 @@ def extract_product_info_from_text(text: str):
             breadcrumb_line = line
             break
     
-    # 3. Extrair categoria
     if breadcrumb_line:
         parts = [p.strip() for p in breadcrumb_line.split('>')]
         categoria = parts[-1].replace('icon arrow right', '').strip()
         product_data['categoria'] = categoria
     
-    # 4. Encontrar o título do produto
     search_start = start_idx
     if breadcrumb_line and breadcrumb_line in lines:
         search_start = lines.index(breadcrumb_line) + 1
@@ -134,7 +136,6 @@ def extract_product_info_from_text(text: str):
         product_data['nome'] = line
         break
     
-    # Fallback para nome
     if not product_data['nome'] and breadcrumb_line:
         longest = ''
         for i in range(search_start, min(search_start+20, len(lines))):
@@ -142,20 +143,14 @@ def extract_product_info_from_text(text: str):
                 longest = lines[i]
         product_data['nome'] = longest
     
-    # 5. Extrair preços (promocional e original)
-    # Padrão: "R$XX,XX - R$YY,YY" (pode aparecer uma ou duas linhas)
-    # Exemplo: "R$49,99 - R$59,99" e depois "R$59,00 - R$69,00"
     price_ranges = re.findall(r'R\$\s*([\d\.,]+)\s*-\s*R\$\s*([\d\.,]+)', text)
     if price_ranges:
-        # Primeira faixa (promocional) – menor valor
         product_data['preco'] = parse_price(price_ranges[0][0])
-        # Segunda faixa (original) – maior valor da segunda faixa, se existir
         if len(price_ranges) > 1:
             product_data['preco_original'] = parse_price(price_ranges[1][1])
         else:
             product_data['preco_original'] = product_data['preco']
     else:
-        # Fallback: primeiro valor R$ encontrado
         price_match = re.search(r'R\$\s*([\d\.,]+)', text)
         if price_match:
             product_data['preco'] = parse_price(price_match.group(0))
@@ -166,9 +161,8 @@ def extract_product_info_from_text(text: str):
     
     return product_data
 
-# ================= PROCESSAMENTO COM PYAUTOGUI =================
 def type_link_and_enter(link):
-    pyautogui.click(264, 86)
+    pyautogui.click(ADDRESS_BAR_X, ADDRESS_BAR_Y)
     time.sleep(1)
     pyautogui.hotkey('ctrl', 'a')
     time.sleep(0.5)
@@ -179,7 +173,7 @@ def type_link_and_enter(link):
     pyautogui.press('enter')
 
 def copy_page_content():
-    pyautogui.click(552, 312)
+    pyautogui.click(CLICK_COPY_X, CLICK_COPY_Y)
     time.sleep(0.5)
     pyautogui.hotkey('ctrl', 'a')
     time.sleep(0.5)
@@ -188,12 +182,11 @@ def copy_page_content():
     return pyperclip.paste()
 
 def save_image_via_context_menu(filename):
-    pyautogui.click(308, 813, button='right')
+    pyautogui.click(SAVE_IMAGE_RIGHT_CLICK_X, SAVE_IMAGE_RIGHT_CLICK_Y, button='right')
     time.sleep(1.2)
-    pyautogui.press('s')           # atalho "Salvar imagem como"
+    pyautogui.press('s')
     time.sleep(2)
-    # Garante que o campo de nome está focado (opcional: clicar nele)
-    pyautogui.click(500, 400)      # posição aproximada do campo de nome (ajuste conforme sua tela)
+    pyautogui.click(FILENAME_FIELD_X, FILENAME_FIELD_Y)
     time.sleep(0.5)
     pyautogui.hotkey('ctrl', 'a')
     time.sleep(0.3)
@@ -208,29 +201,20 @@ def get_latest_downloaded_file():
     return max(files, key=os.path.getctime) if files else None
 
 def process_product(link, existing_products):
-    # 1. Navegar
     type_link_and_enter(link)
     time.sleep(random.uniform(12, 18))
 
-    # 2. Copiar texto
     page_text = copy_page_content()
     if not page_text:
         logger.error("Falha ao copiar conteúdo.")
         return None, False
 
-    # Opcional: salvar texto para debug
-    # with open('debug_text.txt', 'w', encoding='utf-8') as f:
-    #     f.write(page_text)
-
-    # 3. Extrair informações
     data = extract_product_info_from_text(page_text)
     nome = data.get('nome')
     preco = data.get('preco', 0.0)
     categoria_extraida = data.get('categoria', '')
 
-    # Validação
     if not nome or len(nome) < 5:
-        # Último fallback: pegar qualquer linha que não seja muito curta e não contenha palavras ignoradas
         lines = page_text.split('\n')
         for line in lines:
             line = line.strip()
@@ -241,7 +225,6 @@ def process_product(link, existing_products):
         logger.error(f"Nome inválido: '{nome}'")
         return None, False
 
-    # 4. Salvar imagem
     safe_name = sanitize_filename(nome) + '.png'
     save_image_via_context_menu(safe_name)
     time.sleep(2)
@@ -261,12 +244,10 @@ def process_product(link, existing_products):
     else:
         logger.warning("Nenhuma imagem baixada.")
 
-    # 5. Categoria via IA (usa a extraída como sugestão)
     categorias_existentes = [p.get('categoria', '') for p in existing_products if p.get('categoria')]
     contexto = f"Produto: {nome}\nCategoria sugerida pelo site: {categoria_extraida}"
     categoria = obter_categoria_llm(nome, contexto, categorias_existentes) or (categoria_extraida or "Geral")
 
-    # 6. Atualizar ou criar
     existing = next((p for p in existing_products if p.get('link') == link), None)
     if existing:
         if existing.get('nome') != nome and existing.get('imagem'):
@@ -299,7 +280,6 @@ def process_product(link, existing_products):
         logger.info(f"Novo produto: {nome} (ID {new_id}) | Preço: R${preco:.2f}")
         return new_prod, False
 
-# ================= MAIN =================
 def run_bot(links):
     produtos = load_json()
     for idx, link in enumerate(links, 1):
